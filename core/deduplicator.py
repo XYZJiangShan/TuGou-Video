@@ -213,9 +213,9 @@ PRESETS = {
         add_invisible_watermark=True,
     ),
     "智能帧替换": DedupConfig(
-        # 夜猫同款策略：保持原始帧率，替换约35%帧为图案帧
+        # v3: 保持原始帧率，每3帧模糊+色偏1帧（不闪烁！）
+        # 替换帧是原始帧的模糊变体，不是彩色图案 → 肉眼几乎不可见
         # 帧数/帧率不变 → 平台检测风险最低
-        # 图案帧在B帧位置被极度压缩，播放时不可见
         frame_replace=True,
         replace_ratio=0.35,
         replace_interval=3,
@@ -248,7 +248,8 @@ PRESETS = {
         add_invisible_watermark=True,
     ),
     "帧替换+上采样": DedupConfig(
-        # 终极组合：帧替换 + 1080p上采样 + 微调，最接近夜猫完整流程
+        # 终极组合v3：模糊帧替换(不闪烁) + 1080p上采样 + 微调
+        # 最接近夜猫完整流程，效果最强
         frame_replace=True,
         replace_ratio=0.35,
         replace_interval=3,
@@ -892,24 +893,27 @@ class VideoDeduplicator:
 
     def _apply_frame_replace(self, input_path, output_path, config, video_info, callback=None):
         """
-        智能帧替换 — 保持原始帧率，替换部分帧为图案帧
+        智能帧替换 v3 — 保持原始帧率，替换部分帧为"模糊化近似帧"（不闪烁）
         
-        核心原理（对标夜猫下载版策略）：
-        =================================
+        v3 修复闪烁问题：
+        ==================
+        v2问题: 替换帧是彩色几何图案 → 与内容差异极大 → 肉眼每秒看到10次闪烁
+        v3方案: 替换帧改为"对当前帧做极度模糊+色偏+噪点"，视觉差异极小
+        
+        核心原理：
         1. 保持原始帧率（30fps）和帧数不变 → 平台检测风险最低
-        2. 按固定间隔（如每3帧替换1帧）用图案帧覆盖原始内容帧
-        3. 跳过前N帧（默认60帧≈2秒）保护片头
-        4. libx264 High + B-frames：图案帧自然落入B帧位置被极度压缩
-        5. sc_threshold=0：图案帧不触发场景切换
+        2. 按固定间隔（每N帧）对选中帧施加强模糊+色彩偏移+噪点
+        3. 替换帧在编码层面是全新数据（像素全变），改变视频指纹
+        4. 替换帧在视觉层面与相邻帧近似（模糊版本），**不产生闪烁**
+        5. libx264 High + B-frames + sc_threshold=0
         
-        与"几何图案插帧"的区别：
-        - 不翻倍帧率（30fps保持不变，不是60fps）
-        - 不增加帧数（总帧数不变）
-        - 替换原有帧，而不是插入新帧
-        - 平台检测风险大幅降低
+        与v2的区别：
+        - 不使用外部图案图片（不再overlay独立图片流）
+        - 直接在视频滤镜链中用enable条件对选中帧做模糊+扰动
+        - 完全不闪烁，因为替换帧是原始帧的模糊变体
         """
         if callback:
-            callback(10, "智能帧替换: 分析视频参数...")
+            callback(10, "智能帧替换v3: 分析视频参数...")
         
         # 获取视频尺寸和帧率
         width, height, fps = 1920, 1080, 30
@@ -931,164 +935,160 @@ class VideoDeduplicator:
         if config.upscale_1080p and height < 1080:
             target_h = 1080
             target_w = int(width * (1080 / height))
-            # 确保宽度是偶数
             target_w = target_w + (target_w % 2)
         
-        # 创建临时目录
-        temp_dir = os.path.join(os.path.dirname(output_path) or ".", f"_replace_temp_{uuid.uuid4().hex[:8]}")
-        os.makedirs(temp_dir, exist_ok=True)
-        
+        # 获取视频时长
+        duration_total = None
         try:
-            if callback:
-                callback(15, "智能帧替换: 生成几何图案...")
-            
-            # 生成图案帧
-            pattern_img = os.path.join(temp_dir, "geometric_pattern.png")
-            self._generate_geometric_frame(target_w, target_h, pattern_img)
-            
-            # 获取视频时长
-            duration_total = None
-            try:
-                probe_cmd = [
-                    self.ffprobe_path, "-v", "quiet",
-                    "-show_entries", "format=duration",
-                    "-of", "default=noprint_wrappers=1:nokey=1",
-                    input_path
-                ]
-                result = self._run(probe_cmd, capture_output=True, timeout=15)
-                duration_total = float(result.stdout.strip())
-            except Exception:
-                pass
-            
-            if callback:
-                callback(20, f"智能帧替换: 每{config.replace_interval}帧替换1帧, 跳过前{config.replace_skip_start}帧...")
-            
-            # 构建滤镜链
-            # 核心：overlay enable 表达式
-            # 条件：帧号 >= skip_start AND 帧号 % interval == 0
-            skip = config.replace_skip_start
-            interval = config.replace_interval
-            trim_duration = (duration_total + 5) if duration_total else 600
-            
-            # 视频滤镜部分
-            vf_scale = ""
-            if config.upscale_1080p and height < 1080:
-                vf_scale = f"scale={target_w}:{target_h}:flags={config.upscale_method},"
-            
-            # overlay条件：帧号>=skip 且 (帧号-skip)%interval==0
-            # FFmpeg的enable表达式：gte(n,skip)*not(mod(n-skip,interval))
-            filter_complex = (
-                f"[0:v]fps={fps},{vf_scale}setsar=1[main];"
-                f"[1:v]loop=-1:size=1,trim=duration={trim_duration:.1f},"
-                f"fps={fps},scale={target_w}:{target_h},format=yuva420p,setsar=1[pattern];"
-                f"[main][pattern]overlay=0:0:"
-                f"enable='gte(n\\,{skip})*not(mod(n-{skip}\\,{interval}))':"
-                f"shortest=1,"
-                f"setpts=N/{fps}/TB"
-                f"[out]"
-            )
-            
-            # 构建编码命令
-            cmd = [
-                self.ffmpeg_path, "-y",
-                "-i", input_path,
-                "-i", pattern_img,
-                "-filter_complex", filter_complex,
-                "-map", "[out]",
-                "-map", "0:a?",
+            probe_cmd = [
+                self.ffprobe_path, "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path
             ]
-            
-            # libx264 High + B-frames（和几何图案插帧同款编码参数）
+            result = self._run(probe_cmd, capture_output=True, timeout=15)
+            duration_total = float(result.stdout.strip())
+        except Exception:
+            pass
+        
+        if callback:
+            callback(15, f"智能帧替换v3: 每{config.replace_interval}帧模糊1帧, 跳过前{config.replace_skip_start}帧...")
+        
+        skip = config.replace_skip_start
+        interval = config.replace_interval
+        
+        # 构建滤镜链 — 核心思路：
+        # 1. 分流：原始流 + 模糊流
+        # 2. 模糊流对每一帧做：强高斯模糊(boxblur=30:5) + 色偏(hue) + 噪点
+        # 3. overlay条件：在选中帧位置用模糊流覆盖原始流
+        # 4. 模糊帧看起来像"虚焦的同一画面"，不是完全不同的图案
+        
+        # 上采样滤镜
+        vf_scale = ""
+        if config.upscale_1080p and height < 1080:
+            vf_scale = f"scale={target_w}:{target_h}:flags={config.upscale_method},"
+        
+        # 随机模糊参数和色偏
+        blur_radius = random.randint(20, 40)
+        blur_power = random.randint(3, 6)
+        hue_shift = random.uniform(3, 8)  # 轻度色偏（3-8度，肉眼勉强可见）
+        noise_str = random.randint(8, 15)
+        
+        # enable条件：帧号>=skip 且 (帧号-skip)%interval==0
+        enable_expr = f"gte(n\\,{skip})*not(mod(n-{skip}\\,{interval}))"
+        
+        # 滤镜策略：使用 geq 或 boxblur + enable 条件
+        # boxblur 的 enable 可以让选中帧被模糊，其余帧保持原样
+        # 然后叠加噪点和色偏（也用enable条件）
+        filter_complex = (
+            f"[0:v]fps={fps},{vf_scale}setsar=1,"
+            # 选中帧做强高斯模糊（其余帧不受影响）
+            f"boxblur=lr={blur_radius}:lp={blur_power}:enable='{enable_expr}',"
+            # 选中帧叠加噪点
+            f"noise=alls={noise_str}:allf=t+u:enable='{enable_expr}',"
+            # 选中帧做色偏
+            f"hue=h={hue_shift:.1f}:enable='{enable_expr}',"
+            # 选中帧做轻度亮度偏移
+            f"eq=brightness=0.03:enable='{enable_expr}',"
+            # 时间戳归一化
+            f"setpts=N/{fps}/TB"
+            f"[out]"
+        )
+        
+        # 构建编码命令
+        cmd = [
+            self.ffmpeg_path, "-y",
+            "-i", input_path,
+            "-filter_complex", filter_complex,
+            "-map", "[out]",
+            "-map", "0:a?",
+        ]
+        
+        # libx264 High + B-frames
+        cmd.extend([
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-profile:v", "high",
+            "-bf", "2",
+            "-b_strategy", "2",
+            "-crf", "20",
+            "-maxrate", "15000k",
+            "-bufsize", "15000k",
+            "-g", str(fps * 4),         # GOP = 4秒
+            "-sc_threshold", "0",        # 模糊帧不触发场景切换
+            "-refs", "3",
+            "-direct-pred", "auto",
+        ])
+        
+        cmd.extend([
+            "-c:a", "aac", "-b:a", "192k",
+            "-r", str(fps),              # 保持原始帧率
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+        ])
+        
+        # 音频滤镜
+        af_parts = []
+        if config.speed_change and config.speed_factor != 1.0:
+            af_parts.append(f"atempo={config.speed_factor}")
+        if config.audio_pitch_shift and config.audio_pitch_semitones != 0:
+            pitch_factor = 2 ** (config.audio_pitch_semitones / 12.0)
+            af_parts.append(f"asetrate=44100*{pitch_factor:.6f}")
+            af_parts.append("aresample=44100")
+        if af_parts:
+            cmd.extend(["-af", ",".join(af_parts)])
+        
+        # 去尾
+        if config.trim_tail and config.trim_tail_seconds > 0 and duration_total:
+            end_time = duration_total - config.trim_tail_seconds
+            if end_time > 0:
+                cmd.extend(["-t", f"{end_time:.3f}"])
+        
+        # 随机元数据
+        if config.modify_metadata:
             cmd.extend([
-                "-c:v", "libx264",
-                "-preset", "medium",
-                "-profile:v", "high",
-                "-bf", "2",
-                "-b_strategy", "2",
-                "-crf", "20",
-                "-maxrate", "15000k",
-                "-bufsize", "15000k",
-                "-g", str(fps * 4),         # GOP = 4秒（120帧@30fps）
-                "-sc_threshold", "0",        # 图案帧不触发场景切换
-                "-refs", "3",
-                "-direct-pred", "auto",
+                "-metadata", f"title=vid_{uuid.uuid4().hex[:12]}",
+                "-metadata", f"comment={uuid.uuid4().hex}",
+                "-metadata", f"creation_time={int(time.time())}",
+                "-metadata", f"encoder=custom_{random.randint(1000, 9999)}",
             ])
-            
-            cmd.extend([
-                "-c:a", "aac", "-b:a", "192k",
-                "-r", str(fps),              # 保持原始帧率！
-                "-pix_fmt", "yuv420p",
-                "-movflags", "+faststart",
-            ])
-            
-            # 音频滤镜
-            af_parts = []
-            if config.speed_change and config.speed_factor != 1.0:
-                af_parts.append(f"atempo={config.speed_factor}")
-            if config.audio_pitch_shift and config.audio_pitch_semitones != 0:
-                pitch_factor = 2 ** (config.audio_pitch_semitones / 12.0)
-                af_parts.append(f"asetrate=44100*{pitch_factor:.6f}")
-                af_parts.append("aresample=44100")
-            if af_parts:
-                cmd.extend(["-af", ",".join(af_parts)])
-            
-            # 去尾
-            if config.trim_tail and config.trim_tail_seconds > 0 and duration_total:
-                end_time = duration_total - config.trim_tail_seconds
-                if end_time > 0:
-                    cmd.extend(["-t", f"{end_time:.3f}"])
-            
-            # 随机元数据
-            if config.modify_metadata:
-                cmd.extend([
-                    "-metadata", f"title=vid_{uuid.uuid4().hex[:12]}",
-                    "-metadata", f"comment={uuid.uuid4().hex}",
-                    "-metadata", f"creation_time={int(time.time())}",
-                    "-metadata", f"encoder=custom_{random.randint(1000, 9999)}",
-                ])
-            
-            cmd.append(output_path)
-            
-            if callback:
-                replace_pct = int(100 / interval)
-                msg = f"智能帧替换: {fps}fps(不变), ~{replace_pct}%帧替换"
-                if config.upscale_1080p:
-                    msg += f", {width}x{height}→{target_w}x{target_h}"
-                callback(25, msg)
-            
-            process = self._popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-            )
-            
-            stderr_output = []
-            for line in process.stderr:
-                stderr_output.append(line)
-                if callback and duration_total:
-                    time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})', line)
-                    if time_match:
-                        h, m, s, cs = map(int, time_match.groups())
-                        current = h * 3600 + m * 60 + s + cs / 100.0
-                        progress = min(90, int(25 + (current / duration_total) * 65))
-                        speed_match = re.search(r'speed=\s*([\d.]+)x', line)
-                        speed = speed_match.group(1) if speed_match else "?"
-                        callback(progress, f"帧替换处理中... {current:.1f}s / {duration_total:.1f}s ({speed}x)")
-            
-            process.wait()
-            
-            if process.returncode != 0:
-                error_text = "".join(stderr_output[-30:])
-                raise RuntimeError(f"智能帧替换处理失败:\n{error_text}")
-            
-            if callback:
-                callback(95, "智能帧替换完成!")
-            
-            return output_path
-            
-        finally:
-            try:
-                shutil.rmtree(temp_dir, ignore_errors=True)
-            except Exception:
-                pass
+        
+        cmd.append(output_path)
+        
+        if callback:
+            replace_pct = int(100 / interval)
+            msg = f"智能帧替换v3: {fps}fps(不变), ~{replace_pct}%帧模糊替换(不闪烁)"
+            if config.upscale_1080p:
+                msg += f", {width}x{height}→{target_w}x{target_h}"
+            callback(25, msg)
+        
+        process = self._popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        
+        stderr_output = []
+        for line in process.stderr:
+            stderr_output.append(line)
+            if callback and duration_total:
+                time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})', line)
+                if time_match:
+                    h, m, s, cs = map(int, time_match.groups())
+                    current = h * 3600 + m * 60 + s + cs / 100.0
+                    progress = min(90, int(25 + (current / duration_total) * 65))
+                    speed_match = re.search(r'speed=\s*([\d.]+)x', line)
+                    speed = speed_match.group(1) if speed_match else "?"
+                    callback(progress, f"帧替换v3处理中... {current:.1f}s / {duration_total:.1f}s ({speed}x)")
+        
+        process.wait()
+        
+        if process.returncode != 0:
+            error_text = "".join(stderr_output[-30:])
+            raise RuntimeError(f"智能帧替换v3处理失败:\n{error_text}")
+        
+        if callback:
+            callback(95, "智能帧替换v3完成!(模糊替换,不闪烁)")
+        
+        return output_path
 
     def _apply_frame_stuffing(self, input_path, output_path, config, video_info, callback=None):
         """
@@ -1988,10 +1988,10 @@ def get_preset_description(name):
         "极限去重": "所有手段全开+镜像+大幅旋转，最强去重但画质有损",
         "帧膨胀模式": "帧率3倍膨胀+噪点，文件体积暴增但发布后自动压缩",
         "帧膨胀+深度去重": "帧膨胀+深度视觉调整，终极去重组合",
-        "几何图案插帧": "夜猫v2: 60fps CFR + High + B-frames，图案帧自然压缩为B帧",
-        "智能帧替换": "推荐! 保持原始帧率，替换35%帧为图案帧，平台检测风险最低",
-        "上采样+重编码": "720p->1080p + 滤镜微调 + GOP重构，不插帧不闪烁最隐蔽",
-        "帧替换+上采样": "终极方案: 帧替换 + 1080p上采样 + 微调，最接近夜猫完整流程",
+        "几何图案插帧": "60fps CFR插帧(有闪烁风险)，建议改用'智能帧替换'",
+        "智能帧替换": "★推荐! v3模糊替换(不闪烁)，保持原始帧率，35%帧模糊+色偏",
+        "上采样+重编码": "★最隐蔽! 720p->1080p+滤镜微调+GOP重构，完全不闪烁",
+        "帧替换+上采样": "★终极方案! 模糊帧替换+1080p上采样，不闪烁+最接近夜猫",
     }
     return descriptions.get(name, "")
 
