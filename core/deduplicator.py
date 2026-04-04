@@ -92,9 +92,11 @@ class DedupConfig:
     # ---- 帧替换设置 ----
     frame_replace: bool = False         # 启用帧替换（保持原始帧率，替换部分帧为图案帧）
     replace_ratio: float = 0.35         # 替换比例 (0.2~0.5，即20%~50%的帧被替换)
-    replace_interval: int = 3           # 替换间隔 (每N帧替换1帧, 3=33%, 2=50%)
+    replace_interval: int = 2           # 替换间隔 (每N帧替换1帧, 2=50%一帧好一帧坏, 3=33%)
     replace_skip_start: int = 60        # 跳过前N帧不替换（保护片头）
     replace_mode: str = "v4"            # 帧替换模式: v3=实时enable条件模糊, v4=预生成混淆帧overlay(夜猫方式)
+    frame_duplicate: bool = False       # 帧复制翻倍（夜猫方式：每帧复制一次，帧数×2）
+    duplicate_skip_ratio: float = 0.5   # 前N%的帧只做复制不替换（0.5=前50%只复制，后50%复制+替换）
 
     # ---- 平台专属设置 ----
     target_codec: str = "h264"          # 编码器: h264 / hevc / auto
@@ -128,8 +130,8 @@ PLATFORM_PRESETS = {
             # 针对: 帧级指纹99.7% + 音频波纹99.2% + 语义理解
             frame_replace=True,
             replace_mode="v4",
-            replace_ratio=0.35,
-            replace_interval=3,
+            replace_ratio=0.50,
+            replace_interval=2,
             replace_skip_start=60,
             upscale_1080p=True,
             upscale_method="lanczos",
@@ -202,6 +204,36 @@ PLATFORM_PRESETS = {
             target_codec="h264",
             gpu_acceleration=False,
         ),
+        "模式3 - 混淆帧替换(v4夜猫)": DedupConfig(
+            # 核心: 帧复制翻倍 + 前50%只复制 + 后50%混淆帧替换（完整夜猫策略）
+            # 夜猫分析: 原始69帧→137帧(翻倍), 前137帧只复制, 之后才换帧
+            # 策略: 帧复制改变帧级指纹 + 混淆帧破坏内容hash + 底噪混入
+            frame_replace=True,
+            replace_mode="v4",
+            replace_ratio=0.50,
+            replace_interval=2,         # 后半段一帧好一帧坏
+            replace_skip_start=30,      # 非翻倍模式的fallback
+            frame_duplicate=True,       # 帧复制翻倍（夜猫核心）
+            duplicate_skip_ratio=0.5,   # 前50%只复制不替换
+            # 画面: 色彩偏移 + 微调（配合快手HEVC重编码）
+            adjust_brightness=True, brightness_value=0.02,
+            adjust_contrast=True, contrast_value=1.02,
+            adjust_saturation=True, saturation_value=1.05,
+            hue_shift=2.5,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.99,
+            speed_change=True, speed_factor=1.02,
+            trim_head=True, trim_head_frames=3,
+            trim_tail=True, trim_tail_seconds=0.1,
+            # 音频: 底噪混入（快手核心策略之一）
+            audio_noise_mix=True, audio_noise_db=-26,
+            # 元数据
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+            # 平台参数: H.264 + GPU加速
+            target_codec="h264",
+            gpu_acceleration=True,
+        ),
     },
     "小红书": {
         "模式1 - 色相锐化+高码率": DedupConfig(
@@ -238,8 +270,8 @@ PLATFORM_PRESETS = {
             # 针对: ResNet50+Faiss工业级检索 + 霍夫变换精排
             frame_replace=True,
             replace_mode="v4",
-            replace_ratio=0.35,
-            replace_interval=3,
+            replace_ratio=0.50,
+            replace_interval=2,
             replace_skip_start=60,
             # 画面: 多维度微调
             adjust_brightness=True, brightness_value=0.02,
@@ -371,8 +403,8 @@ PLATFORM_PRESETS = {
         "智能帧替换": DedupConfig(
             frame_replace=True,
             replace_mode="v4",
-            replace_ratio=0.35,
-            replace_interval=3,
+            replace_ratio=0.50,
+            replace_interval=2,
             replace_skip_start=60,
             adjust_brightness=True, brightness_value=0.01,
             adjust_contrast=True, contrast_value=1.02,
@@ -399,8 +431,9 @@ PLATFORM_PRESETS = {
         ),
         "帧替换+上采样": DedupConfig(
             frame_replace=True,
-            replace_ratio=0.35,
-            replace_interval=3,
+            replace_mode="v4",
+            replace_ratio=0.50,
+            replace_interval=2,
             replace_skip_start=60,
             upscale_1080p=True,
             upscale_method="lanczos",
@@ -1569,22 +1602,109 @@ class VideoDeduplicator:
         
         return output_path
 
+    def _generate_mosaic_confuse_frame(self, src_path, out_path, target_w, target_h, config):
+        """
+        生成碎片拼贴混淆帧（模仿夜猫方式）
+        
+        原理：
+        1. 从原始帧裁切 12-20 个随机小碎片
+        2. 每个碎片随机旋转（30-75°）+ 色调/通道偏移
+        3. 碎片缩小后随机散布在深色背景上
+        4. 整体做模糊+降质处理，大幅降低信息熵
+        5. 效果：空间结构彻底破坏、体积小（对标夜猫~120KB帧大小）
+        """
+        from PIL import Image, ImageFilter, ImageEnhance
+        import numpy as np
+        
+        # 加载原始帧
+        src_img = Image.open(src_path).convert("RGB")
+        src_w, src_h = src_img.size
+        
+        # --- 先对源图做强模糊+降分辨率，减少碎片携带的高频信息 ---
+        src_blurred = src_img.filter(ImageFilter.GaussianBlur(radius=6))
+        # 降到一半分辨率再放回来（破坏细节）
+        small = src_blurred.resize((src_w // 2, src_h // 2), Image.BILINEAR)
+        src_blurred = small.resize((src_w, src_h), Image.BILINEAR)
+        
+        # 创建深色背景
+        bg_r = random.randint(8, 30)
+        bg_g = random.randint(8, 25)
+        bg_b = random.randint(12, 35)
+        canvas = Image.new("RGB", (target_w, target_h), (bg_r, bg_g, bg_b))
+        
+        # 生成 12-20 个碎片（更多更碎）
+        num_fragments = random.randint(12, 20)
+        
+        for _ in range(num_fragments):
+            # 碎片从模糊后的源图裁切（5%-20%画面大小，更小）
+            frag_w = random.randint(int(src_w * 0.05), int(src_w * 0.20))
+            frag_h = random.randint(int(src_h * 0.05), int(src_h * 0.20))
+            x0 = random.randint(0, max(0, src_w - frag_w))
+            y0 = random.randint(0, max(0, src_h - frag_h))
+            
+            fragment = src_blurred.crop((x0, y0, x0 + frag_w, y0 + frag_h))
+            
+            # 色彩增强（大幅度随机调整）
+            fragment = ImageEnhance.Brightness(fragment).enhance(random.uniform(0.3, 1.4))
+            fragment = ImageEnhance.Color(fragment).enhance(random.uniform(0.2, 1.8))
+            fragment = ImageEnhance.Contrast(fragment).enhance(random.uniform(0.4, 1.4))
+            
+            # 通道偏移（RGB独立偏移，制造色偏）
+            r_shift = random.randint(-50, 50)
+            g_shift = random.randint(-50, 50)
+            b_shift = random.randint(-50, 50)
+            arr = np.array(fragment, dtype=np.int16)
+            arr[:, :, 0] = np.clip(arr[:, :, 0] + r_shift, 0, 255)
+            arr[:, :, 1] = np.clip(arr[:, :, 1] + g_shift, 0, 255)
+            arr[:, :, 2] = np.clip(arr[:, :, 2] + b_shift, 0, 255)
+            fragment = Image.fromarray(arr.astype(np.uint8))
+            
+            # 随机旋转（大角度，30-75°）
+            angle = random.uniform(30, 75) * random.choice([-1, 1])
+            fragment = fragment.rotate(angle, expand=True, fillcolor=(bg_r, bg_g, bg_b))
+            
+            # 缩放到很小（目标画面的 8%-25%宽度）
+            scale = random.uniform(0.08, 0.25)
+            new_w = max(4, int(target_w * scale))
+            new_h = max(4, int(fragment.size[1] * (new_w / max(fragment.size[0], 1))))
+            if new_w > 0 and new_h > 0:
+                fragment = fragment.resize((new_w, new_h), Image.BILINEAR)
+            
+            # 随机放置（允许部分超出边界，模仿夜猫截断效果）
+            paste_x = random.randint(-new_w // 3, target_w - new_w // 3)
+            paste_y = random.randint(-new_h // 3, target_h - new_h // 3)
+            
+            canvas.paste(fragment, (paste_x, paste_y))
+        
+        # 整体后处理：模糊让碎片边缘融合 + 降低锐度
+        canvas = canvas.filter(ImageFilter.GaussianBlur(radius=2.0))
+        # 降低整体对比度和饱和度（让画面更"脏"更低熵）
+        canvas = ImageEnhance.Contrast(canvas).enhance(0.8)
+        canvas = ImageEnhance.Color(canvas).enhance(0.7)
+        
+        # 保存为PNG（FFmpeg overlay读取需要无损格式）
+        # 优化：先降到目标分辨率（如果canvas和target一致就不需要），用optimize=True
+        canvas.save(out_path, "PNG", optimize=True)
+        
+        return out_path
+
     def _apply_frame_replace_v4(self, input_path, output_path, config, video_info, callback=None):
         """
         帧替换 v4 — 预生成混淆帧 + overlay替换（夜猫方式）
         
-        核心原理：
+        夜猫完整策略（通过夜鹰分析还原）：
         ==================
-        1. 从视频提取第一帧
-        2. 对该帧做强模糊+色偏+噪点+亮度偏移 → 生成一张固定的"混淆帧"PNG
-        3. 用overlay滤镜按间隔把这张图覆盖到视频帧上（enable条件控制）
-        4. 所有被替换的帧都是同一张图 → 跟夜猫分析结果一致
-        5. 平台发布后重编码会洗掉这些替换帧，播放效果正常
+        1. 帧复制翻倍：每帧输出2次（原始69帧→137帧），VFR方式
+        2. 前半段只复制不替换：前~50%帧纯复制，保护播放体验
+        3. 后半段复制+替换：从约50%位置开始，每隔N帧用混淆帧覆盖
+        4. 混淆帧是碎片拼贴：从首帧裁碎片→旋转/色偏→深色背景散布
+        5. 所有被替换的帧都是同一张混淆帧图
+        6. 平台发布后重编码会洗掉混淆帧，播放正常
         
-        与v3的区别：
-        - v3: 对每帧实时做enable条件模糊（每帧模糊结果略有不同）
-        - v4: 预生成一张固定混淆帧图片，按间隔overlay上去（所有替换帧完全相同）
-        - v4更接近夜猫的实际做法（夜鹰分析看到的"隔一阵出现相同的奇怪图"）
+        关键参数：
+        - frame_duplicate: 是否帧复制翻倍（True=夜猫完整策略）
+        - duplicate_skip_ratio: 前N%的帧只做复制不替换（0.5=前50%跳过）
+        - replace_interval: 后半段每N帧替换1帧（2=一帧好一帧坏）
         """
         import tempfile
         
@@ -1613,8 +1733,9 @@ class VideoDeduplicator:
             target_w = int(width * (1080 / height))
             target_w = target_w + (target_w % 2)
         
-        # 获取视频时长
+        # 获取视频时长和总帧数
         duration_total = None
+        total_frames = None
         try:
             probe_cmd = [
                 self.ffprobe_path, "-v", "quiet",
@@ -1624,8 +1745,25 @@ class VideoDeduplicator:
             ]
             result = self._run(probe_cmd, capture_output=True, timeout=15)
             duration_total = float(result.stdout.strip())
+            total_frames = int(duration_total * fps)
         except Exception:
             pass
+        
+        # 获取精确帧数（nb_frames优先）
+        if total_frames is None:
+            try:
+                probe_cmd2 = [
+                    self.ffprobe_path, "-v", "quiet",
+                    "-select_streams", "v:0",
+                    "-count_frames",
+                    "-show_entries", "stream=nb_read_frames",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    input_path
+                ]
+                result2 = self._run(probe_cmd2, capture_output=True, timeout=60)
+                total_frames = int(result2.stdout.strip())
+            except Exception:
+                total_frames = 900  # 默认30秒×30fps
         
         # 创建临时目录
         temp_dir = tempfile.mkdtemp(prefix="tugou_v4_")
@@ -1649,49 +1787,70 @@ class VideoDeduplicator:
             if not os.path.exists(first_frame_path):
                 raise RuntimeError("提取首帧失败")
             
-            # ---- 第2步：对首帧做强变换生成混淆帧 ----
-            # 随机参数（每次处理都不同，增加随机性）
-            blur_radius = random.randint(25, 45)
-            blur_power = random.randint(4, 7)
-            hue_val = random.uniform(15, 40)  # 较大色偏（因为只有一张图）
-            noise_strength = random.randint(20, 40)
-            bright_shift = random.uniform(0.05, 0.15)
-            sat_shift = random.uniform(0.6, 0.85)
-            
-            # 用FFmpeg处理首帧 → 混淆帧
-            # 强模糊 + 色偏 + 噪点 + 亮度/饱和度偏移
-            confuse_vf = (
-                f"boxblur=lr={blur_radius}:lp={blur_power},"
-                f"hue=h={hue_val:.1f}:s={sat_shift:.2f},"
-                f"noise=alls={noise_strength}:allf=t+u,"
-                f"eq=brightness={bright_shift:.3f}:contrast=0.85"
-            )
-            
-            # 如果有上采样，混淆帧也要匹配目标尺寸
-            if config.upscale_1080p and height < 1080:
-                confuse_vf = f"scale={target_w}:{target_h}:flags={config.upscale_method}," + confuse_vf
-            
-            confuse_cmd = [
-                self.ffmpeg_path, "-y",
-                "-i", first_frame_path,
-                "-vf", confuse_vf,
-                "-q:v", "2",
-                confuse_frame_path
-            ]
-            self._run(confuse_cmd, capture_output=True, timeout=30)
+            # ---- 第2步：生成碎片拼贴混淆帧（夜猫方式） ----
+            try:
+                from PIL import Image, ImageFilter, ImageEnhance
+                confuse_frame_path = self._generate_mosaic_confuse_frame(
+                    first_frame_path, confuse_frame_path,
+                    target_w, target_h, config
+                )
+            except ImportError:
+                # PIL不可用时降级为FFmpeg模糊方式
+                blur_radius = random.randint(25, 45)
+                hue_val = random.uniform(15, 40)
+                confuse_vf = (
+                    f"boxblur=lr={blur_radius}:lp=5,"
+                    f"hue=h={hue_val:.1f}:s=0.7,"
+                    f"noise=alls=30:allf=t+u,"
+                    f"eq=brightness=0.08:contrast=0.85"
+                )
+                if config.upscale_1080p and height < 1080:
+                    confuse_vf = f"scale={target_w}:{target_h}:flags={config.upscale_method}," + confuse_vf
+                confuse_cmd = [
+                    self.ffmpeg_path, "-y",
+                    "-i", first_frame_path,
+                    "-vf", confuse_vf,
+                    "-q:v", "2",
+                    confuse_frame_path
+                ]
+                self._run(confuse_cmd, capture_output=True, timeout=30)
             
             if not os.path.exists(confuse_frame_path):
                 raise RuntimeError("生成混淆帧失败")
             
-            if callback:
-                callback(15, f"帧替换v4: 混淆帧已生成, 每{config.replace_interval}帧替换1帧...")
-            
-            # ---- 第3步：构建overlay滤镜链 ----
-            skip = config.replace_skip_start
+            # ---- 第3步：计算帧复制和替换策略 ----
+            use_dup = config.frame_duplicate
             interval = config.replace_interval
             
-            # enable条件：帧号>=skip 且 (帧号-skip)%interval==0
-            enable_expr = f"gte(n\\,{skip})*not(mod(n-{skip}\\,{interval}))"
+            if use_dup:
+                # 夜猫完整策略：帧复制翻倍 + 前段跳过 + 后段替换
+                # 翻倍后总帧数
+                dup_total = total_frames * 2
+                # 前skip_ratio部分只复制不替换
+                skip_frames = int(dup_total * config.duplicate_skip_ratio)
+                # 确保skip_frames是偶数（因为帧成对出现）
+                skip_frames = skip_frames + (skip_frames % 2)
+                
+                if callback:
+                    callback(15, f"帧替换v4(夜猫策略): 原始{total_frames}帧→翻倍{dup_total}帧, "
+                             f"前{skip_frames}帧只复制, 之后每{interval}帧替换1帧...")
+                
+                # FFmpeg filter_complex逻辑:
+                # 1. fps翻倍（每帧输出2次）→ 帧复制
+                # 2. overlay混淆帧（enable条件: 帧号>=skip_frames 且 间隔匹配）
+                dup_fps = fps * 2  # 翻倍帧率实现帧复制
+                
+                enable_expr = f"gte(n\\,{skip_frames})*not(mod(n-{skip_frames}\\,{interval}))"
+            else:
+                # 非翻倍模式：用原来的skip_start逻辑
+                skip = config.replace_skip_start
+                dup_fps = fps  # 不翻倍
+                
+                enable_expr = f"gte(n\\,{skip})*not(mod(n-{skip}\\,{interval}))"
+                
+                if callback:
+                    callback(15, f"帧替换v4: 混淆帧已生成, 跳过前{skip}帧, "
+                             f"每{interval}帧替换1帧...")
             
             # 上采样滤镜
             vf_scale = ""
@@ -1730,12 +1889,12 @@ class VideoDeduplicator:
             
             global_vf = ",".join(global_filters) + "," if global_filters else ""
             
-            # filter_complex:
+            # ---- 第4步：构建filter_complex ----
             # 输入0=视频, 输入1=混淆帧图片(loop循环)
-            # 视频流做全局微调 → 混淆帧overlay上去(enable条件控制)
+            # 帧复制翻倍通过 fps=dup_fps 实现（原30fps→60fps，每帧自动复制一次）
             filter_complex = (
-                # 视频流：帧率+缩放+全局滤镜
-                f"[0:v]fps={fps},{vf_scale}setsar=1,{global_vf}"
+                # 视频流：帧率(可能翻倍)+缩放+全局滤镜
+                f"[0:v]fps={dup_fps},{vf_scale}setsar=1,{global_vf}"
                 f"format=yuv420p[vmain];"
                 # 混淆帧流：loop循环+缩放到相同尺寸
                 f"[1:v]loop=loop=-1:size=1:start=0,"
@@ -1743,8 +1902,8 @@ class VideoDeduplicator:
                 f"setsar=1,format=yuv420p[vconf];"
                 # overlay：在选中帧位置用混淆帧完全覆盖原始帧
                 f"[vmain][vconf]overlay=0:0:enable='{enable_expr}',"
-                # 时间戳归一化
-                f"setpts=N/{fps}/TB"
+                # 时间戳归一化（用翻倍后的帧率）
+                f"setpts=N/{dup_fps}/TB"
                 f"[out]"
             )
             
@@ -1818,7 +1977,7 @@ class VideoDeduplicator:
                 cmd.extend(["-crf", "20", "-maxrate", "15000k", "-bufsize", "15000k"])
             
             cmd.extend([
-                "-g", str(fps * 4),
+                "-g", str(dup_fps * 4),
                 "-sc_threshold", "0",
                 "-refs", "3",
             ])
@@ -1830,7 +1989,7 @@ class VideoDeduplicator:
             
             cmd.extend([
                 "-c:a", "aac", "-b:a", "192k",
-                "-r", str(fps),
+                "-r", str(dup_fps),
                 "-pix_fmt", "yuv420p",
                 "-movflags", "+faststart",
                 "-shortest",  # 以最短流为准（防止loop无限）
@@ -1867,7 +2026,7 @@ class VideoDeduplicator:
             
             if callback:
                 replace_pct = int(100 / interval)
-                msg = f"帧替换v4(夜猫方式): {fps}fps, ~{replace_pct}%帧替换为预生成混淆帧"
+                msg = f"帧替换v4(夜猫方式): {fps}fps, 一帧好一帧坏(~{replace_pct}%替换)"
                 if config.upscale_1080p:
                     msg += f", {width}x{height}->{target_w}x{target_h}"
                 callback(25, msg)
@@ -2945,11 +3104,12 @@ def get_preset_description(name):
     """获取预设的简要描述"""
     descriptions = {
         # ==== 平台专用 ====
-        "抖音/模式1 - 帧替换+多维微调": "★抖音专用 帧替换v3+1080P上采样+音频变调+多维微调",
+        "抖音/模式1 - 帧替换+多维微调": "★抖音专用 帧替换v4(夜猫方式)+1080P上采样+音频变调+多维微调",
         "快手/模式1 - GPU高速(VFR插帧)": "★快手专用 h264_nvenc+Main+mono音频+MKV重编码(夜猫A)",
         "快手/模式2 - CPU精确(444色度)": "★快手专用 libx264+yuv444p+High4:4:4+MKV重编码(夜猫B)",
+        "快手/模式3 - 混淆帧替换(v4夜猫)": "★快手专用 v4混淆帧一帧好一帧坏+色彩偏移+底噪混入，发布后自动恢复",
         "小红书/模式1 - 色相锐化+高码率": "★小红书专用 色相偏移+强锐化+15Mbps高码率上传",
-        "B站/模式1 - 帧替换+不二压": "★B站专用 帧替换+不二压参数(≤6000kbps)+Level5",
+        "B站/模式1 - 帧替换+不二压": "★B站专用 帧替换v4(夜猫方式)+不二压参数(≤6000kbps)+Level5",
         # ==== 通用 ====
         "轻度去重": "微调色彩+裁剪+轻微变速，适合质量要求高的视频",
         "中度去重": "全面调整色彩/裁剪/变速/锐化/降噪/噪点，推荐日常使用",
@@ -2959,9 +3119,9 @@ def get_preset_description(name):
         "帧膨胀模式": "帧率3倍膨胀+噪点，文件体积暴增但发布后自动压缩",
         "帧膨胀+深度去重": "帧膨胀+深度视觉调整，终极去重组合",
         "几何图案插帧": "60fps CFR插帧(有闪烁风险)，建议改用'智能帧替换'",
-        "智能帧替换": "★推荐! v3模糊替换(不闪烁)，保持原始帧率，35%帧模糊+色偏",
+        "智能帧替换": "★推荐! v4预生成混淆帧(夜猫方式)，一帧好一帧坏(50%替换)，发布后自动恢复",
         "上采样+重编码": "★最隐蔽! 720p->1080p+滤镜微调+GOP重构，完全不闪烁",
-        "帧替换+上采样": "★终极方案! 模糊帧替换+1080p上采样，不闪烁+最接近夜猫",
+        "帧替换+上采样": "★终极方案! v4混淆帧一帧好一帧坏+1080p上采样，发布后自动恢复",
     }
     return descriptions.get(name, "")
 
