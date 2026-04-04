@@ -155,8 +155,68 @@ class VideoDownloader:
 
     # ==================== 抖音下载 ====================
 
+    @staticmethod
+    def _pick_best_quality(video_obj):
+        """
+        从抖音 video 对象中选择最高清晰度的URL。
+
+        优先级策略:
+        1. bit_rate 列表（按分辨率排序，选最高）
+        2. download_addr（通常是高清下载地址）
+        3. play_addr（默认播放地址，可能是720p）
+
+        返回 (best_url, raw_url) 或 (None, None)
+        """
+        best_url = None
+        raw_url = None
+        best_width = 0
+
+        # 策略1: 从 bit_rate 列表选最高分辨率
+        bit_rate_list = video_obj.get("bit_rate", [])
+        if isinstance(bit_rate_list, list) and bit_rate_list:
+            for br in bit_rate_list:
+                if not isinstance(br, dict):
+                    continue
+                # bit_rate 中每个条目有 play_addr 和 gear_name
+                br_play = br.get("play_addr", {})
+                if not isinstance(br_play, dict):
+                    continue
+                br_urls = br_play.get("url_list", [])
+                br_width = br_play.get("width", 0) or br.get("width", 0) or 0
+                br_height = br_play.get("height", 0) or br.get("height", 0) or 0
+                # 用宽×高面积来比较分辨率
+                resolution = max(br_width, br_height)
+                if br_urls and resolution > best_width:
+                    best_width = resolution
+                    raw_url = br_urls[0]
+                    best_url = raw_url.replace("playwm", "play")
+
+        # 策略2: download_addr 通常是最高清的下载地址
+        if not best_url or best_width < 1080:
+            dl_addr = video_obj.get("download_addr", {})
+            if isinstance(dl_addr, dict):
+                dl_urls = dl_addr.get("url_list", [])
+                dl_width = dl_addr.get("width", 0) or 0
+                dl_height = dl_addr.get("height", 0) or 0
+                dl_res = max(dl_width, dl_height)
+                if dl_urls and dl_res >= best_width:
+                    best_width = dl_res
+                    raw_url = dl_urls[0]
+                    best_url = raw_url.replace("playwm", "play")
+
+        # 策略3: 最后兜底用 play_addr
+        if not best_url:
+            play_addr = video_obj.get("play_addr", {})
+            if isinstance(play_addr, dict):
+                url_list = play_addr.get("url_list", [])
+                if url_list:
+                    raw_url = url_list[0]
+                    best_url = raw_url.replace("playwm", "play")
+
+        return best_url, raw_url
+
     def _extract_video_from_html(self, html_text):
-        """从HTML页面中提取视频URL和描述"""
+        """从HTML页面中提取视频URL和描述（优先最高清晰度）"""
         # 方法A: 提取 _ROUTER_DATA
         pattern = re.compile(r'window\._ROUTER_DATA\s*=\s*(.*?)</script>', re.DOTALL)
         match = pattern.search(html_text)
@@ -179,15 +239,12 @@ class VideoDownloader:
                         continue
                     item = item_list[0]
                     video = item.get("video", {})
-                    play_addr = video.get("play_addr", {})
-                    url_list = play_addr.get("url_list", [])
-                    if url_list:
-                        raw_url = url_list[0]
-                        # 无水印URL: playwm -> play
-                        video_url = raw_url.replace("playwm", "play")
-                        desc = item.get("desc", "douyin_video")
-                        # 返回无水印URL和原始URL（备选）
-                        return video_url, desc, raw_url
+                    desc = item.get("desc", "douyin_video")
+
+                    # 用智能选择器挑最高清晰度
+                    best_url, raw_url = self._pick_best_quality(video)
+                    if best_url:
+                        return best_url, desc, raw_url
             except (json.JSONDecodeError, KeyError, TypeError):
                 pass
 
@@ -200,34 +257,38 @@ class VideoDownloader:
                 decoded = url_unquote(raw)
                 rd = json.loads(decoded)
 
-                def _find_play_addr(obj, depth=0):
+                def _find_best_video(obj, depth=0):
+                    """递归查找视频对象，优先选择最高清晰度"""
                     if depth > 10 or obj is None:
-                        return None
+                        return None, None, None
                     if isinstance(obj, dict):
-                        if "play_addr" in obj and isinstance(obj["play_addr"], dict):
-                            urls = obj["play_addr"].get("url_list", [])
-                            if urls:
-                                return urls[0].replace("playwm", "play")
+                        # 如果当前对象包含 bit_rate 或 play_addr，说明是 video 对象
+                        if "bit_rate" in obj or "play_addr" in obj:
+                            best_url, raw_url = self._pick_best_quality(obj)
+                            if best_url:
+                                return best_url, raw_url, None
+                        # playApi 兜底
                         if "playApi" in obj and isinstance(obj["playApi"], str) and obj["playApi"]:
-                            return obj["playApi"].replace("\\u002F", "/")
+                            api_url = obj["playApi"].replace("\\u002F", "/")
+                            return api_url, api_url, None
                         for v in obj.values():
-                            r = _find_play_addr(v, depth + 1)
-                            if r:
+                            r = _find_best_video(v, depth + 1)
+                            if r[0]:
                                 return r
                     elif isinstance(obj, list):
                         for item in obj[:5]:
-                            r = _find_play_addr(item, depth + 1)
-                            if r:
+                            r = _find_best_video(item, depth + 1)
+                            if r[0]:
                                 return r
-                    return None
+                    return None, None, None
 
-                url = _find_play_addr(rd)
-                if url:
-                    return url, "douyin_video", url
+                best_url, raw_url, _ = _find_best_video(rd)
+                if best_url:
+                    return best_url, "douyin_video", raw_url or best_url
             except Exception:
                 pass
 
-        # 方法C: 正则直接搜索视频URL
+        # 方法C: 正则直接搜索视频URL（兜底，无法选清晰度）
         direct_patterns = [
             r'"playApi"\s*:\s*"(https?://[^"]+)"',
             r'"play_addr"[^}]*"url_list"\s*:\s*\["(https?://[^"]+)"',
