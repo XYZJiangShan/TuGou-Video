@@ -95,6 +95,19 @@ class DedupConfig:
     replace_interval: int = 3           # 替换间隔 (每N帧替换1帧, 3=33%, 2=50%)
     replace_skip_start: int = 60        # 跳过前N帧不替换（保护片头）
 
+    # ---- 平台专属设置 ----
+    target_codec: str = "h264"          # 编码器: h264 / hevc / auto
+    target_bitrate: str = ""            # 目标码率(空=自动): "5800k" / "15M" 等
+    max_bitrate: str = ""               # 最大码率(空=自动): "8500k" 等
+    target_level: str = ""              # H.264 Level: "" / "5" / "5.1"
+    audio_noise_mix: bool = False       # 混入环境底噪(-26dB)
+    audio_noise_db: float = -26.0       # 底噪分贝
+    hue_shift: float = 0.0             # 色相偏移(度), 0=不偏移
+    color_balance_rs: float = 0.0      # 色彩平衡 red-shadow
+    color_balance_gs: float = 0.0      # 色彩平衡 green-shadow
+    pad_edges: bool = False             # 边缘padding（区别于crop）
+    pad_pixels: int = 0                 # padding像素数
+
     # ---- 输出设置 ----
     output_quality: str = "high"        # high / medium / low
     output_fps: int = 0                 # 0 = 保持原始帧率
@@ -102,175 +115,298 @@ class DedupConfig:
     gpu_acceleration: bool = False      # GPU硬件加速(需要NVIDIA显卡)
 
 
-# 预设模式
-PRESETS = {
-    "轻度去重": DedupConfig(
-        adjust_brightness=True, brightness_value=0.01,
-        adjust_contrast=True, contrast_value=1.02,
-        adjust_saturation=True, saturation_value=1.02,
-        adjust_gamma=False,
-        sharpen=False, denoise=False,
-        crop_edges=True, crop_percent=0.99,
-        horizontal_flip=False, slight_rotation=False,
-        speed_change=True, speed_factor=1.02,
-        trim_head=True, trim_head_frames=2,
-        trim_tail=True, trim_tail_seconds=0.05,
-        audio_pitch_shift=False,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "中度去重": DedupConfig(
-        # 默认值即为中度
-    ),
-    "深度去重": DedupConfig(
-        adjust_brightness=True, brightness_value=0.03,
-        adjust_contrast=True, contrast_value=1.06,
-        adjust_saturation=True, saturation_value=1.06,
-        adjust_gamma=True, gamma_value=1.03,
-        sharpen=True, denoise=True,
-        crop_edges=True, crop_percent=0.97,
-        horizontal_flip=False, slight_rotation=True, rotation_angle=0.8,
-        speed_change=True, speed_factor=1.06,
-        trim_head=True, trim_head_frames=6,
-        trim_tail=True, trim_tail_seconds=0.2,
-        audio_pitch_shift=True, audio_pitch_semitones=0.8,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "镜像翻转模式": DedupConfig(
-        horizontal_flip=True,
-        adjust_brightness=True, brightness_value=0.02,
-        adjust_contrast=True, contrast_value=1.03,
-        crop_edges=True, crop_percent=0.98,
-        speed_change=True, speed_factor=1.03,
-        modify_metadata=True, randomize_md5=True,
-    ),
-    "极限去重": DedupConfig(
-        adjust_brightness=True, brightness_value=0.04,
-        adjust_contrast=True, contrast_value=1.08,
-        adjust_saturation=True, saturation_value=1.08,
-        adjust_gamma=True, gamma_value=1.05,
-        sharpen=True, denoise=True,
-        crop_edges=True, crop_percent=0.96,
-        horizontal_flip=True, slight_rotation=True, rotation_angle=1.0,
-        speed_change=True, speed_factor=1.08,
-        trim_head=True, trim_head_frames=8,
-        trim_tail=True, trim_tail_seconds=0.3,
-        audio_pitch_shift=True, audio_pitch_semitones=1.0,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "帧膨胀模式": DedupConfig(
-        # 帧膨胀为主 + 轻度视觉调整
-        frame_stuffing=True,
-        stuffing_mode="boost_fps",
-        stuffing_ratio=3.0,
-        stuffing_frame_type="noise",
-        # 轻度视觉调整（帧膨胀本身已经很强）
-        adjust_brightness=True, brightness_value=0.02,
-        adjust_contrast=True, contrast_value=1.03,
-        adjust_saturation=True, saturation_value=1.02,
-        crop_edges=True, crop_percent=0.99,
-        speed_change=True, speed_factor=1.02,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "帧膨胀+深度去重": DedupConfig(
-        # 帧膨胀 + 深度视觉调整，最强组合
-        frame_stuffing=True,
-        stuffing_mode="interleave",
-        stuffing_ratio=2.0,
-        stuffing_frame_type="noise",
-        # 深度视觉调整
-        adjust_brightness=True, brightness_value=0.03,
-        adjust_contrast=True, contrast_value=1.06,
-        adjust_saturation=True, saturation_value=1.05,
-        adjust_gamma=True, gamma_value=1.03,
-        sharpen=True, denoise=True,
-        crop_edges=True, crop_percent=0.97,
-        horizontal_flip=False, slight_rotation=True, rotation_angle=0.5,
-        speed_change=True, speed_factor=1.04,
-        trim_head=True, trim_head_frames=4,
-        trim_tail=True, trim_tail_seconds=0.15,
-        audio_pitch_shift=True, audio_pitch_semitones=0.5,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "几何图案插帧": DedupConfig(
-        # 类似参考软件的插帧方式：在原始帧间插入彩色几何图案帧
-        # 平台压缩后该帧不可见，但完全改变了视频指纹
-        frame_stuffing=True,
-        stuffing_mode="geometric",
-        stuffing_ratio=2.0,
-        stuffing_frame_type="noise",
-        # 轻度视觉调整
-        adjust_brightness=True, brightness_value=0.01,
-        adjust_contrast=True, contrast_value=1.02,
-        adjust_saturation=True, saturation_value=1.02,
-        crop_edges=True, crop_percent=0.99,
-        speed_change=True, speed_factor=1.02,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "智能帧替换": DedupConfig(
-        # v3: 保持原始帧率，每3帧模糊+色偏1帧（不闪烁！）
-        # 替换帧是原始帧的模糊变体，不是彩色图案 → 肉眼几乎不可见
-        # 帧数/帧率不变 → 平台检测风险最低
-        frame_replace=True,
-        replace_ratio=0.35,
-        replace_interval=3,
-        replace_skip_start=60,
-        # 轻度视觉调整
-        adjust_brightness=True, brightness_value=0.01,
-        adjust_contrast=True, contrast_value=1.02,
-        adjust_saturation=True, saturation_value=1.02,
-        crop_edges=True, crop_percent=0.99,
-        speed_change=True, speed_factor=1.02,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "上采样+重编码": DedupConfig(
-        # 纯重编码方案：720p→1080p + 滤镜微调 + GOP重构
-        # 不插帧、不闪烁、最隐蔽
-        upscale_1080p=True,
-        upscale_method="lanczos",
-        # 中度视觉调整
-        adjust_brightness=True, brightness_value=0.02,
-        adjust_contrast=True, contrast_value=1.03,
-        adjust_saturation=True, saturation_value=1.03,
-        adjust_gamma=True, gamma_value=1.02,
-        sharpen=True, denoise=True,
-        crop_edges=True, crop_percent=0.99,
-        speed_change=True, speed_factor=1.02,
-        trim_head=True, trim_head_frames=2,
-        trim_tail=True, trim_tail_seconds=0.1,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
-    "帧替换+上采样": DedupConfig(
-        # 终极组合v3：模糊帧替换(不闪烁) + 1080p上采样 + 微调
-        # 最接近夜猫完整流程，效果最强
-        frame_replace=True,
-        replace_ratio=0.35,
-        replace_interval=3,
-        replace_skip_start=60,
-        upscale_1080p=True,
-        upscale_method="lanczos",
-        # 中度视觉调整
-        adjust_brightness=True, brightness_value=0.02,
-        adjust_contrast=True, contrast_value=1.03,
-        adjust_saturation=True, saturation_value=1.03,
-        adjust_gamma=True, gamma_value=1.02,
-        sharpen=True, denoise=True,
-        crop_edges=True, crop_percent=0.99,
-        speed_change=True, speed_factor=1.02,
-        trim_head=True, trim_head_frames=2,
-        trim_tail=True, trim_tail_seconds=0.1,
-        audio_pitch_shift=True, audio_pitch_semitones=0.3,
-        modify_metadata=True, randomize_md5=True,
-        add_invisible_watermark=True,
-    ),
+# ==================== 平台预设结构 ====================
+# 顶层key是平台名，每个平台下是 {"模式名": DedupConfig}
+# GUI按"平台 → 模式"双级选择
+# "通用"分类保留原有预设，不绑定特定平台
+
+PLATFORM_PRESETS = {
+    "抖音": {
+        "模式1 - 帧替换+多维微调": DedupConfig(
+            # 核心: 帧替换v3 + 1080p上采样 + 音频修改
+            # 针对: 帧级指纹99.7% + 音频波纹99.2% + 语义理解
+            frame_replace=True,
+            replace_ratio=0.35,
+            replace_interval=3,
+            replace_skip_start=60,
+            upscale_1080p=True,
+            upscale_method="lanczos",
+            # 多维度画面微调
+            adjust_brightness=True, brightness_value=0.02,
+            adjust_contrast=True, contrast_value=1.02,
+            adjust_saturation=True, saturation_value=1.05,
+            adjust_gamma=True, gamma_value=1.02,
+            hue_shift=2.0,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.99,
+            slight_rotation=True, rotation_angle=0.3,
+            speed_change=True, speed_factor=1.02,
+            trim_head=True, trim_head_frames=3,
+            trim_tail=True, trim_tail_seconds=0.1,
+            # 音频: 变调+变速（破坏音频波纹指纹）
+            audio_pitch_shift=True, audio_pitch_semitones=0.5,
+            audio_speed_match=True,
+            # 元数据
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+            # 平台参数: H.264, 抖音会重编码所以码率不限
+            target_codec="h264",
+        ),
+    },
+    "快手": {
+        "模式1 - 色彩偏移+HEVC编码": DedupConfig(
+            # 核心: 色彩偏移 + 音频混淆 + HEVC编码（权重加成）
+            # 针对: DCT系数(ResNet) + MFCC + ERNIE3.0
+            frame_replace=True,
+            replace_ratio=0.35,
+            replace_interval=3,
+            replace_skip_start=60,
+            # 画面: 色彩偏移为主（干扰DCT系数）
+            adjust_brightness=True, brightness_value=0.01,
+            adjust_contrast=True, contrast_value=1.01,
+            adjust_saturation=True, saturation_value=1.03,
+            hue_shift=2.0,
+            color_balance_rs=0.02,
+            color_balance_gs=-0.01,
+            sharpen=True, denoise=False,
+            crop_edges=True, crop_percent=0.99,
+            add_invisible_watermark=True,
+            # 速度不改（快手对VFR敏感）
+            speed_change=False,
+            trim_head=True, trim_head_frames=2,
+            trim_tail=True, trim_tail_seconds=0.1,
+            # 音频: 变调 + 底噪混入（干扰MFCC）
+            audio_pitch_shift=True, audio_pitch_semitones=0.5,
+            audio_noise_mix=True, audio_noise_db=-26.0,
+            # 元数据
+            modify_metadata=True, randomize_md5=True,
+            # 平台参数: HEVC编码（快手有权重加成）
+            target_codec="hevc",
+        ),
+    },
+    "小红书": {
+        "模式1 - 色相锐化+高码率": DedupConfig(
+            # 核心: 色相偏移 + 锐化（破坏LBP纹理）+ 高码率上传
+            # 针对: HSV色彩模型 + LBP纹理 + BERT语义
+            # 小红书检测相对最弱，不需要帧替换
+            frame_replace=False,
+            upscale_1080p=True,
+            upscale_method="lanczos",
+            # 画面: 色相偏移 + 强锐化（破坏LBP纹理特征）
+            adjust_brightness=True, brightness_value=0.01,
+            adjust_contrast=True, contrast_value=1.01,
+            adjust_saturation=True, saturation_value=1.05,
+            hue_shift=3.0,
+            sharpen=True, denoise=False,  # 强锐化破坏纹理
+            crop_edges=True, crop_percent=0.99,
+            add_invisible_watermark=True,
+            # 时间轴: 不变速
+            speed_change=False,
+            trim_head=True, trim_head_frames=2,
+            trim_tail=True, trim_tail_seconds=0.05,
+            # 音频: 轻度变调
+            audio_pitch_shift=True, audio_pitch_semitones=0.3,
+            # 元数据
+            modify_metadata=True, randomize_md5=True,
+            # 平台参数: H.264, 高码率上传
+            target_codec="h264",
+            target_bitrate="15M",
+        ),
+    },
+    "B站": {
+        "模式1 - 帧替换+不二压": DedupConfig(
+            # 核心: 帧替换 + 画面调整 + 不二压参数（≤6000kbps）
+            # 针对: ResNet50+Faiss工业级检索 + 霍夫变换精排
+            frame_replace=True,
+            replace_ratio=0.35,
+            replace_interval=3,
+            replace_skip_start=60,
+            # 画面: 多维度微调
+            adjust_brightness=True, brightness_value=0.02,
+            adjust_contrast=True, contrast_value=1.02,
+            adjust_saturation=True, saturation_value=1.03,
+            adjust_gamma=True, gamma_value=1.02,
+            hue_shift=2.0,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.99,
+            slight_rotation=True, rotation_angle=0.3,
+            add_invisible_watermark=True,
+            # 速度微调（干扰片段匹配）
+            speed_change=True, speed_factor=0.98,
+            trim_head=True, trim_head_frames=3,
+            trim_tail=True, trim_tail_seconds=0.1,
+            # 音频
+            audio_pitch_shift=True, audio_pitch_semitones=0.3,
+            # 元数据
+            modify_metadata=True, randomize_md5=True,
+            # 平台参数: H.264, 不二压阈值
+            target_codec="h264",
+            target_bitrate="5800k",
+            max_bitrate="8500k",
+            target_level="5",
+        ),
+    },
+    "通用": {
+        "轻度去重": DedupConfig(
+            adjust_brightness=True, brightness_value=0.01,
+            adjust_contrast=True, contrast_value=1.02,
+            adjust_saturation=True, saturation_value=1.02,
+            adjust_gamma=False,
+            sharpen=False, denoise=False,
+            crop_edges=True, crop_percent=0.99,
+            horizontal_flip=False, slight_rotation=False,
+            speed_change=True, speed_factor=1.02,
+            trim_head=True, trim_head_frames=2,
+            trim_tail=True, trim_tail_seconds=0.05,
+            audio_pitch_shift=False,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "中度去重": DedupConfig(
+            # 默认值即为中度
+        ),
+        "深度去重": DedupConfig(
+            adjust_brightness=True, brightness_value=0.03,
+            adjust_contrast=True, contrast_value=1.06,
+            adjust_saturation=True, saturation_value=1.06,
+            adjust_gamma=True, gamma_value=1.03,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.97,
+            horizontal_flip=False, slight_rotation=True, rotation_angle=0.8,
+            speed_change=True, speed_factor=1.06,
+            trim_head=True, trim_head_frames=6,
+            trim_tail=True, trim_tail_seconds=0.2,
+            audio_pitch_shift=True, audio_pitch_semitones=0.8,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "镜像翻转模式": DedupConfig(
+            horizontal_flip=True,
+            adjust_brightness=True, brightness_value=0.02,
+            adjust_contrast=True, contrast_value=1.03,
+            crop_edges=True, crop_percent=0.98,
+            speed_change=True, speed_factor=1.03,
+            modify_metadata=True, randomize_md5=True,
+        ),
+        "极限去重": DedupConfig(
+            adjust_brightness=True, brightness_value=0.04,
+            adjust_contrast=True, contrast_value=1.08,
+            adjust_saturation=True, saturation_value=1.08,
+            adjust_gamma=True, gamma_value=1.05,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.96,
+            horizontal_flip=True, slight_rotation=True, rotation_angle=1.0,
+            speed_change=True, speed_factor=1.08,
+            trim_head=True, trim_head_frames=8,
+            trim_tail=True, trim_tail_seconds=0.3,
+            audio_pitch_shift=True, audio_pitch_semitones=1.0,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "帧膨胀模式": DedupConfig(
+            frame_stuffing=True,
+            stuffing_mode="boost_fps",
+            stuffing_ratio=3.0,
+            stuffing_frame_type="noise",
+            adjust_brightness=True, brightness_value=0.02,
+            adjust_contrast=True, contrast_value=1.03,
+            adjust_saturation=True, saturation_value=1.02,
+            crop_edges=True, crop_percent=0.99,
+            speed_change=True, speed_factor=1.02,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "帧膨胀+深度去重": DedupConfig(
+            frame_stuffing=True,
+            stuffing_mode="interleave",
+            stuffing_ratio=2.0,
+            stuffing_frame_type="noise",
+            adjust_brightness=True, brightness_value=0.03,
+            adjust_contrast=True, contrast_value=1.06,
+            adjust_saturation=True, saturation_value=1.05,
+            adjust_gamma=True, gamma_value=1.03,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.97,
+            horizontal_flip=False, slight_rotation=True, rotation_angle=0.5,
+            speed_change=True, speed_factor=1.04,
+            trim_head=True, trim_head_frames=4,
+            trim_tail=True, trim_tail_seconds=0.15,
+            audio_pitch_shift=True, audio_pitch_semitones=0.5,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "几何图案插帧": DedupConfig(
+            frame_stuffing=True,
+            stuffing_mode="geometric",
+            stuffing_ratio=2.0,
+            stuffing_frame_type="noise",
+            adjust_brightness=True, brightness_value=0.01,
+            adjust_contrast=True, contrast_value=1.02,
+            adjust_saturation=True, saturation_value=1.02,
+            crop_edges=True, crop_percent=0.99,
+            speed_change=True, speed_factor=1.02,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "智能帧替换": DedupConfig(
+            frame_replace=True,
+            replace_ratio=0.35,
+            replace_interval=3,
+            replace_skip_start=60,
+            adjust_brightness=True, brightness_value=0.01,
+            adjust_contrast=True, contrast_value=1.02,
+            adjust_saturation=True, saturation_value=1.02,
+            crop_edges=True, crop_percent=0.99,
+            speed_change=True, speed_factor=1.02,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "上采样+重编码": DedupConfig(
+            upscale_1080p=True,
+            upscale_method="lanczos",
+            adjust_brightness=True, brightness_value=0.02,
+            adjust_contrast=True, contrast_value=1.03,
+            adjust_saturation=True, saturation_value=1.03,
+            adjust_gamma=True, gamma_value=1.02,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.99,
+            speed_change=True, speed_factor=1.02,
+            trim_head=True, trim_head_frames=2,
+            trim_tail=True, trim_tail_seconds=0.1,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+        "帧替换+上采样": DedupConfig(
+            frame_replace=True,
+            replace_ratio=0.35,
+            replace_interval=3,
+            replace_skip_start=60,
+            upscale_1080p=True,
+            upscale_method="lanczos",
+            adjust_brightness=True, brightness_value=0.02,
+            adjust_contrast=True, contrast_value=1.03,
+            adjust_saturation=True, saturation_value=1.03,
+            adjust_gamma=True, gamma_value=1.02,
+            sharpen=True, denoise=True,
+            crop_edges=True, crop_percent=0.99,
+            speed_change=True, speed_factor=1.02,
+            trim_head=True, trim_head_frames=2,
+            trim_tail=True, trim_tail_seconds=0.1,
+            audio_pitch_shift=True, audio_pitch_semitones=0.3,
+            modify_metadata=True, randomize_md5=True,
+            add_invisible_watermark=True,
+        ),
+    },
 }
+
+# 兼容旧代码: 扁平化 PRESETS 字典（"平台/模式名" 格式）
+PRESETS = {}
+for _platform, _modes in PLATFORM_PRESETS.items():
+    for _mode_name, _config in _modes.items():
+        if _platform == "通用":
+            PRESETS[_mode_name] = _config
+        else:
+            PRESETS[f"{_platform}/{_mode_name}"] = _config
 
 
 class VideoDeduplicator:
@@ -980,13 +1116,48 @@ class VideoDeduplicator:
         # 滤镜策略：使用 geq 或 boxblur + enable 条件
         # boxblur 的 enable 可以让选中帧被模糊，其余帧保持原样
         # 然后叠加噪点和色偏（也用enable条件）
+        
+        # --- 全局画面微调（对所有帧生效，来自平台预设） ---
+        global_filters = []
+        if config.adjust_brightness and config.brightness_value != 0:
+            global_filters.append(f"eq=brightness={config.brightness_value:.3f}")
+        if config.adjust_contrast and config.contrast_value != 1.0:
+            global_filters.append(f"eq=contrast={config.contrast_value:.3f}")
+        if config.adjust_saturation and config.saturation_value != 1.0:
+            global_filters.append(f"eq=saturation={config.saturation_value:.3f}")
+        if config.adjust_gamma and config.gamma_value != 1.0:
+            global_filters.append(f"eq=gamma={config.gamma_value:.3f}")
+        if config.hue_shift != 0:
+            global_filters.append(f"hue=h={config.hue_shift:.1f}")
+        if config.color_balance_rs != 0 or config.color_balance_gs != 0:
+            global_filters.append(
+                f"colorbalance=rs={config.color_balance_rs:.3f}:gs={config.color_balance_gs:.3f}"
+            )
+        if config.sharpen:
+            global_filters.append("unsharp=5:5:0.8:5:5:0.0")
+        if config.denoise:
+            global_filters.append("hqdn3d=2:2:3:3")
+        if config.crop_edges and config.crop_percent < 1.0:
+            global_filters.append(
+                f"crop=iw*{config.crop_percent:.4f}:ih*{config.crop_percent:.4f}"
+            )
+        if config.slight_rotation and config.rotation_angle != 0:
+            angle_rad = config.rotation_angle * 3.14159 / 180
+            global_filters.append(
+                f"rotate={angle_rad:.6f}:fillcolor=black@0"
+            )
+        
+        global_vf = ",".join(global_filters) + "," if global_filters else ""
+        
         filter_complex = (
             f"[0:v]fps={fps},{vf_scale}setsar=1,"
+            # 全局画面微调
+            f"{global_vf}"
             # 选中帧做强高斯模糊（其余帧不受影响）
             f"boxblur=lr={blur_radius}:lp={blur_power}:enable='{enable_expr}',"
             # 选中帧叠加噪点
             f"noise=alls={noise_str}:allf=t+u:enable='{enable_expr}',"
-            # 选中帧做色偏
+            # 选中帧做色偏（帧替换专用，加在全局色偏之上）
             f"hue=h={hue_shift:.1f}:enable='{enable_expr}',"
             # 选中帧做轻度亮度偏移
             f"eq=brightness=0.03:enable='{enable_expr}',"
@@ -999,26 +1170,84 @@ class VideoDeduplicator:
         cmd = [
             self.ffmpeg_path, "-y",
             "-i", input_path,
-            "-filter_complex", filter_complex,
-            "-map", "[out]",
-            "-map", "0:a?",
         ]
         
-        # libx264 High + B-frames
+        # 底噪混入需要额外输入源
+        if config.audio_noise_mix:
+            cmd.extend([
+                "-f", "lavfi", "-i",
+                "anoisesrc=d=3600:c=pink:r=44100:a=0.002"
+            ])
+            # 音频滤镜链
+            af_chain = ""
+            af_parts = []
+            if config.speed_change and config.speed_factor != 1.0:
+                af_parts.append(f"atempo={config.speed_factor}")
+            if config.audio_pitch_shift and config.audio_pitch_semitones != 0:
+                pitch_factor = 2 ** (config.audio_pitch_semitones / 12.0)
+                af_parts.append(f"asetrate=44100*{pitch_factor:.6f}")
+                af_parts.append("aresample=44100")
+            if af_parts:
+                af_chain = ",".join(af_parts) + ","
+            
+            noise_db = config.audio_noise_db
+            # 第二个输入（噪声源）的索引
+            noise_idx = 1
+            audio_fc = (
+                f"[{noise_idx}:a]volume={noise_db}dB[noise];"
+                f"[0:a]{af_chain}aformat=sample_rates=44100[amain];"
+                f"[amain][noise]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+            )
+            # 合并视频和音频 filter_complex
+            full_fc = filter_complex + ";" + audio_fc
+            cmd.extend(["-filter_complex", full_fc])
+            cmd.extend(["-map", "[out]", "-map", "[aout]"])
+        else:
+            cmd.extend(["-filter_complex", filter_complex])
+            cmd.extend(["-map", "[out]", "-map", "0:a?"])
+        
+        # 编码器选择（支持平台指定）
+        codec = config.target_codec or "h264"
+        if codec == "hevc":
+            if config.gpu_acceleration:
+                cmd.extend(["-c:v", "hevc_nvenc"])
+            else:
+                cmd.extend(["-c:v", "libx265", "-tag:v", "hvc1"])
+        else:
+            if config.gpu_acceleration:
+                cmd.extend(["-c:v", "h264_nvenc"])
+            else:
+                cmd.extend(["-c:v", "libx264"])
+        
         cmd.extend([
-            "-c:v", "libx264",
             "-preset", "medium",
-            "-profile:v", "high",
+            "-profile:v", "high" if codec == "h264" else "main",
             "-bf", "2",
-            "-b_strategy", "2",
-            "-crf", "20",
-            "-maxrate", "15000k",
-            "-bufsize", "15000k",
+        ])
+        if codec == "h264":
+            cmd.extend(["-b_strategy", "2"])
+        
+        # 码率控制（平台指定 > 默认）
+        if config.target_bitrate:
+            cmd.extend(["-b:v", config.target_bitrate])
+            if config.max_bitrate:
+                cmd.extend(["-maxrate", config.max_bitrate, "-bufsize", config.max_bitrate])
+            else:
+                cmd.extend(["-maxrate", config.target_bitrate, "-bufsize", config.target_bitrate])
+        else:
+            cmd.extend(["-crf", "20", "-maxrate", "15000k", "-bufsize", "15000k"])
+        
+        cmd.extend([
             "-g", str(fps * 4),         # GOP = 4秒
             "-sc_threshold", "0",        # 模糊帧不触发场景切换
             "-refs", "3",
-            "-direct-pred", "auto",
         ])
+        if codec == "h264":
+            cmd.extend(["-direct-pred", "auto"])
+        
+        # H.264 Level（B站不二压等）
+        if config.target_level:
+            cmd.extend(["-level", config.target_level])
         
         cmd.extend([
             "-c:a", "aac", "-b:a", "192k",
@@ -1027,16 +1256,17 @@ class VideoDeduplicator:
             "-movflags", "+faststart",
         ])
         
-        # 音频滤镜
-        af_parts = []
-        if config.speed_change and config.speed_factor != 1.0:
-            af_parts.append(f"atempo={config.speed_factor}")
-        if config.audio_pitch_shift and config.audio_pitch_semitones != 0:
-            pitch_factor = 2 ** (config.audio_pitch_semitones / 12.0)
-            af_parts.append(f"asetrate=44100*{pitch_factor:.6f}")
-            af_parts.append("aresample=44100")
-        if af_parts:
-            cmd.extend(["-af", ",".join(af_parts)])
+        # 音频滤镜（非底噪混入模式时）
+        if not config.audio_noise_mix:
+            af_parts = []
+            if config.speed_change and config.speed_factor != 1.0:
+                af_parts.append(f"atempo={config.speed_factor}")
+            if config.audio_pitch_shift and config.audio_pitch_semitones != 0:
+                pitch_factor = 2 ** (config.audio_pitch_semitones / 12.0)
+                af_parts.append(f"asetrate=44100*{pitch_factor:.6f}")
+                af_parts.append("aresample=44100")
+            if af_parts:
+                cmd.extend(["-af", ",".join(af_parts)])
         
         # 去尾
         if config.trim_tail and config.trim_tail_seconds > 0 and duration_total:
@@ -1624,6 +1854,16 @@ class VideoDeduplicator:
         if config.denoise:
             filters.append("hqdn3d=2:2:3:3")
 
+        # 7.5 色相偏移（平台专属）
+        if config.hue_shift != 0:
+            filters.append(f"hue=h={config.hue_shift:.1f}")
+
+        # 7.6 色彩平衡（平台专属）
+        if config.color_balance_rs != 0 or config.color_balance_gs != 0:
+            filters.append(
+                f"colorbalance=rs={config.color_balance_rs:.3f}:gs={config.color_balance_gs:.3f}"
+            )
+
         # 8. 不可见水印 (随机噪点叠加)
         if config.add_invisible_watermark:
             # 添加极微弱的随机噪点，人眼不可见但改变像素值
@@ -1673,13 +1913,38 @@ class VideoDeduplicator:
 
         return filters
 
+    def _build_audio_cmd_extra(self, config: DedupConfig, input_path):
+        """构建音频处理的额外FFmpeg参数（底噪混入等需要额外输入源的功能）"""
+        extra_inputs = []
+        extra_filter = []
+
+        if config.audio_noise_mix:
+            # 生成粉噪并以指定dB混入
+            # 使用amix或者amerge，这里通过filter_complex实现
+            extra_inputs.extend([
+                "-f", "lavfi", "-i",
+                f"anoisesrc=d=3600:c=pink:r=44100:a=0.002"
+            ])
+            # 需要在调用处组合 filter_complex
+            extra_filter.append(
+                f"[1:a]volume={config.audio_noise_db}dB[noise];"
+                f"[0:a][noise]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+            )
+
+        return extra_inputs, extra_filter
+
     def _get_quality_params(self, config: DedupConfig):
-        """根据质量设置获取编码参数"""
+        """根据质量设置和平台参数获取编码参数"""
         params = []
 
+        # 确定编码器
+        codec = config.target_codec or "h264"
+
         if config.gpu_acceleration:
-            # NVIDIA GPU加速编码
-            params.extend(["-c:v", "h264_nvenc"])
+            if codec == "hevc":
+                params.extend(["-c:v", "hevc_nvenc"])
+            else:
+                params.extend(["-c:v", "h264_nvenc"])
             if config.output_quality == "high":
                 params.extend(["-preset", "p7", "-cq", "18"])
             elif config.output_quality == "medium":
@@ -1687,32 +1952,52 @@ class VideoDeduplicator:
             else:
                 params.extend(["-preset", "p1", "-cq", "28"])
         else:
-            # CPU编码 (libx264)
-            params.extend(["-c:v", "libx264"])
-            if config.output_quality == "high":
-                params.extend([
-                    "-preset", "slow",
-                    "-crf", "18",
-                    "-b:v", "15000k",
-                    "-maxrate", "20000k",
-                    "-bufsize", "20000k",
-                ])
-            elif config.output_quality == "medium":
-                params.extend([
-                    "-preset", "medium",
-                    "-crf", "23",
-                    "-b:v", "8000k",
-                    "-maxrate", "12000k",
-                    "-bufsize", "12000k",
-                ])
+            if codec == "hevc":
+                params.extend(["-c:v", "libx265"])
+                params.extend(["-tag:v", "hvc1"])  # 兼容性标签
             else:
-                params.extend([
-                    "-preset", "fast",
-                    "-crf", "28",
-                    "-b:v", "4000k",
-                    "-maxrate", "6000k",
-                    "-bufsize", "6000k",
-                ])
+                params.extend(["-c:v", "libx264"])
+
+            # 如果有平台指定的目标码率，优先使用
+            if config.target_bitrate:
+                params.extend(["-b:v", config.target_bitrate])
+                if config.max_bitrate:
+                    params.extend(["-maxrate", config.max_bitrate])
+                    params.extend(["-bufsize", config.max_bitrate])
+                else:
+                    # 默认maxrate = 1.5x target
+                    params.extend(["-maxrate", config.target_bitrate])
+                    params.extend(["-bufsize", config.target_bitrate])
+            else:
+                # 使用质量预设
+                if config.output_quality == "high":
+                    params.extend([
+                        "-preset", "slow",
+                        "-crf", "18",
+                        "-b:v", "15000k",
+                        "-maxrate", "20000k",
+                        "-bufsize", "20000k",
+                    ])
+                elif config.output_quality == "medium":
+                    params.extend([
+                        "-preset", "medium",
+                        "-crf", "23",
+                        "-b:v", "8000k",
+                        "-maxrate", "12000k",
+                        "-bufsize", "12000k",
+                    ])
+                else:
+                    params.extend([
+                        "-preset", "fast",
+                        "-crf", "28",
+                        "-b:v", "4000k",
+                        "-maxrate", "6000k",
+                        "-bufsize", "6000k",
+                    ])
+
+        # H.264 Level（B站不二压需要 Level 5）
+        if config.target_level:
+            params.extend(["-level", config.target_level])
 
         # 音频编码
         params.extend(["-c:a", "aac", "-b:a", "192k"])
@@ -1813,15 +2098,52 @@ class VideoDeduplicator:
         # 输入文件
         cmd.extend(["-i", input_path])
 
-        # 视频滤镜
-        if video_filters:
-            vf_str = ",".join(video_filters)
-            cmd.extend(["-vf", vf_str])
+        # 底噪混入需要额外输入源 + filter_complex
+        use_filter_complex = config.audio_noise_mix
+        
+        if use_filter_complex:
+            # 添加噪声源输入
+            cmd.extend([
+                "-f", "lavfi", "-i",
+                "anoisesrc=d=3600:c=pink:r=44100:a=0.002"
+            ])
+            
+            # 构建 filter_complex
+            fc_parts = []
+            
+            # 视频滤镜链
+            if video_filters:
+                vf_str = ",".join(video_filters)
+                fc_parts.append(f"[0:v]{vf_str}[vout]")
+            
+            # 音频滤镜链 + 底噪混入
+            audio_chain = ""
+            if audio_filters:
+                audio_chain = ",".join(audio_filters) + ","
+            
+            noise_db = config.audio_noise_db
+            fc_parts.append(
+                f"[1:a]volume={noise_db}dB[noise];"
+                f"[0:a]{audio_chain}aformat=sample_rates=44100[amain];"
+                f"[amain][noise]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+            )
+            
+            cmd.extend(["-filter_complex", ";".join(fc_parts)])
+            
+            if video_filters:
+                cmd.extend(["-map", "[vout]"])
+            else:
+                cmd.extend(["-map", "0:v"])
+            cmd.extend(["-map", "[aout]"])
+        else:
+            # 标准路径：分开的 -vf 和 -af
+            if video_filters:
+                vf_str = ",".join(video_filters)
+                cmd.extend(["-vf", vf_str])
 
-        # 音频滤镜
-        if audio_filters:
-            af_str = ",".join(audio_filters)
-            cmd.extend(["-af", af_str])
+            if audio_filters:
+                af_str = ",".join(audio_filters)
+                cmd.extend(["-af", af_str])
 
         # 编码质量参数
         cmd.extend(self._get_quality_params(config))
@@ -1974,13 +2296,36 @@ class VideoDeduplicator:
 
 
 def get_preset_names():
-    """获取所有预设名称"""
+    """获取所有预设名称（扁平化，兼容旧代码）"""
     return list(PRESETS.keys())
+
+
+def get_platform_names():
+    """获取所有平台名称（按显示顺序）"""
+    # 平台列表固定顺序：四大平台在前，通用在后
+    order = ["抖音", "快手", "小红书", "B站", "通用"]
+    return [p for p in order if p in PLATFORM_PRESETS]
+
+
+def get_platform_modes(platform):
+    """获取指定平台下的所有模式名称"""
+    return list(PLATFORM_PRESETS.get(platform, {}).keys())
+
+
+def get_platform_preset(platform, mode):
+    """获取指定平台的指定模式的 DedupConfig"""
+    return PLATFORM_PRESETS.get(platform, {}).get(mode)
 
 
 def get_preset_description(name):
     """获取预设的简要描述"""
     descriptions = {
+        # ==== 平台专用 ====
+        "抖音/模式1 - 帧替换+多维微调": "★抖音专用 帧替换v3+1080P上采样+音频变调+多维微调",
+        "快手/模式1 - 色彩偏移+HEVC编码": "★快手专用 色彩偏移+HEVC编码(权重加成)+音频底噪混入",
+        "小红书/模式1 - 色相锐化+高码率": "★小红书专用 色相偏移+强锐化+15Mbps高码率上传",
+        "B站/模式1 - 帧替换+不二压": "★B站专用 帧替换+不二压参数(≤6000kbps)+Level5",
+        # ==== 通用 ====
         "轻度去重": "微调色彩+裁剪+轻微变速，适合质量要求高的视频",
         "中度去重": "全面调整色彩/裁剪/变速/锐化/降噪/噪点，推荐日常使用",
         "深度去重": "大幅调整所有参数+音频变调，适合高重复度视频",
@@ -1994,6 +2339,12 @@ def get_preset_description(name):
         "帧替换+上采样": "★终极方案! 模糊帧替换+1080p上采样，不闪烁+最接近夜猫",
     }
     return descriptions.get(name, "")
+
+
+def get_mode_description(platform, mode):
+    """获取平台模式的简要描述"""
+    key = f"{platform}/{mode}" if platform != "通用" else mode
+    return get_preset_description(key) or get_preset_description(mode)
 
 
 # ==================== 命令行测试 ====================

@@ -20,8 +20,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from core.downloader import VideoDownloader
 from core.deduplicator import (
-    VideoDeduplicator, DedupConfig, PRESETS,
-    get_preset_names, get_preset_description
+    VideoDeduplicator, DedupConfig, PRESETS, PLATFORM_PRESETS,
+    get_preset_names, get_preset_description,
+    get_platform_names, get_platform_modes, get_platform_preset,
+    get_mode_description
 )
 
 
@@ -127,7 +129,7 @@ class VideoToolkitApp:
         title_label = tk.Label(
             header,
             text="🐶 土狗视频下载器",
-            font=("Microsoft YaHei UI", 26, "bold"),
+            font=("Microsoft YaHei UI", 13, "bold"),
             fg=self.COLORS["accent"],
             bg=self.COLORS["bg_dark"],
         )
@@ -136,7 +138,7 @@ class VideoToolkitApp:
         version_label = tk.Label(
             header,
             text="V1.0 | 下载 · 去重 · 发布",
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             fg=self.COLORS["text_dim"],
             bg=self.COLORS["bg_dark"],
         )
@@ -198,7 +200,7 @@ class VideoToolkitApp:
         tk.Label(
             url_frame,
             text="粘贴抖音分享链接（支持短链接和完整链接）",
-            font=("Microsoft YaHei UI", 12),
+            font=("Microsoft YaHei UI", 6),
             fg=self.COLORS["text_dim"],
             bg=self.COLORS["bg_card"],
         ).pack(anchor="w", pady=(4, 10))
@@ -206,7 +208,7 @@ class VideoToolkitApp:
         self.url_entry = tk.Text(
             url_frame,
             height=3,
-            font=("Consolas", 14),
+            font=("Consolas", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -235,7 +237,7 @@ class VideoToolkitApp:
         self.download_dir_entry = tk.Entry(
             path_row,
             textvariable=self.download_dir_var,
-            font=("Consolas", 13),
+            font=("Consolas", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -246,7 +248,7 @@ class VideoToolkitApp:
         browse_btn = tk.Button(
             path_row,
             text="浏览...",
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             relief="flat",
@@ -263,7 +265,7 @@ class VideoToolkitApp:
         self.download_btn = tk.Button(
             action_frame,
             text="⬇️  开始下载",
-            font=("Microsoft YaHei UI", 18, "bold"),
+            font=("Microsoft YaHei UI", 9, "bold"),
             bg=self.COLORS["accent"],
             fg="white",
             activebackground=self.COLORS["accent_hover"],
@@ -308,7 +310,7 @@ class VideoToolkitApp:
         self.dl_log = scrolledtext.ScrolledText(
             log_frame,
             height=8,
-            font=("Consolas", 12),
+            font=("Consolas", 6),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -330,7 +332,7 @@ class VideoToolkitApp:
         tk.Label(
             file_frame,
             text="🎥 输入视频",
-            font=("Microsoft YaHei UI", 16, "bold"),
+            font=("Microsoft YaHei UI", 8, "bold"),
             fg=self.COLORS["text"],
             bg=self.COLORS["bg_card"],
         ).pack(anchor="w")
@@ -342,7 +344,7 @@ class VideoToolkitApp:
         tk.Entry(
             input_row,
             textvariable=self.dedup_input_var,
-            font=("Consolas", 13),
+            font=("Consolas", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -352,7 +354,7 @@ class VideoToolkitApp:
         tk.Button(
             input_row,
             text="选择文件",
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             relief="flat",
@@ -368,7 +370,7 @@ class VideoToolkitApp:
         tk.Label(
             output_row_frame,
             text="输出目录:",
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             fg=self.COLORS["text_dim"],
             bg=self.COLORS["bg_card"],
         ).pack(side="left")
@@ -377,7 +379,7 @@ class VideoToolkitApp:
         tk.Entry(
             output_row_frame,
             textvariable=self.dedup_output_var,
-            font=("Consolas", 13),
+            font=("Consolas", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -387,7 +389,7 @@ class VideoToolkitApp:
         tk.Button(
             output_row_frame,
             text="浏览",
-            font=("Microsoft YaHei UI", 12),
+            font=("Microsoft YaHei UI", 6),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             relief="flat",
@@ -396,48 +398,64 @@ class VideoToolkitApp:
             command=self._browse_dedup_output,
         ).pack(side="right")
 
-        # 预设模式选择
+        # 预设模式选择 — 按平台分组
         preset_frame = tk.Frame(tab, bg=self.COLORS["bg_card"], padx=20, pady=20)
         preset_frame.pack(fill="x", padx=15, pady=(0, 12))
 
         tk.Label(
             preset_frame,
-            text="⚡ 去重模式",
-            font=("Microsoft YaHei UI", 16, "bold"),
+            text="⚡ 去重模式（选择目标平台 → 选择模式）",
+            font=("Microsoft YaHei UI", 8, "bold"),
             fg=self.COLORS["text"],
             bg=self.COLORS["bg_card"],
         ).pack(anchor="w")
 
-        self.preset_var = tk.StringVar(value="中度去重")
-        preset_names = get_preset_names()
+        # 平台选择行
+        platform_row = tk.Frame(preset_frame, bg=self.COLORS["bg_card"])
+        platform_row.pack(fill="x", pady=(10, 8))
 
-        for name in preset_names:
-            desc = get_preset_description(name)
-            row = tk.Frame(preset_frame, bg=self.COLORS["bg_card"])
-            row.pack(fill="x", pady=3)
+        tk.Label(
+            platform_row,
+            text="目标平台:",
+            font=("Microsoft YaHei UI", 7),
+            fg=self.COLORS["text_dim"],
+            bg=self.COLORS["bg_card"],
+        ).pack(side="left")
 
+        self.platform_var = tk.StringVar(value="抖音")
+        platform_names = get_platform_names()
+
+        # 平台按钮：用 Radiobutton 横排
+        for pname in platform_names:
+            # 平台图标
+            icons = {"抖音": "🎵", "快手": "🎬", "小红书": "📕", "B站": "📺", "通用": "⚙️"}
+            icon = icons.get(pname, "📌")
             rb = tk.Radiobutton(
-                row,
-                text=f"  {name}",
-                variable=self.preset_var,
-                value=name,
-                font=("Microsoft YaHei UI", 14),
+                platform_row,
+                text=f" {icon} {pname}",
+                variable=self.platform_var,
+                value=pname,
+                font=("Microsoft YaHei UI", 7, "bold"),
                 fg=self.COLORS["text"],
                 bg=self.COLORS["bg_card"],
-                selectcolor=self.COLORS["bg_input"],
+                selectcolor=self.COLORS["accent"],
                 activebackground=self.COLORS["bg_card"],
                 activeforeground=self.COLORS["accent"],
+                indicatoron=0,  # 按钮样式
+                padx=12, pady=4,
+                relief="flat",
+                borderwidth=2,
                 cursor="hand2",
+                command=self._on_platform_changed,
             )
-            rb.pack(side="left")
+            rb.pack(side="left", padx=4)
 
-            tk.Label(
-                row,
-                text=f"  {desc}",
-                font=("Microsoft YaHei UI", 11),
-                fg=self.COLORS["text_dim"],
-                bg=self.COLORS["bg_card"],
-            ).pack(side="left")
+        # 模式选择区域（动态更新）
+        self.mode_container = tk.Frame(preset_frame, bg=self.COLORS["bg_card"])
+        self.mode_container.pack(fill="x", pady=(4, 0))
+
+        self.preset_var = tk.StringVar()
+        self._refresh_mode_list()
 
         # 生成数量
         count_frame = tk.Frame(preset_frame, bg=self.COLORS["bg_card"])
@@ -446,7 +464,7 @@ class VideoToolkitApp:
         tk.Label(
             count_frame,
             text="生成数量:",
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             fg=self.COLORS["text"],
             bg=self.COLORS["bg_card"],
         ).pack(side="left")
@@ -457,7 +475,7 @@ class VideoToolkitApp:
             from_=1, to=20,
             textvariable=self.gen_count_var,
             width=5,
-            font=("Microsoft YaHei UI", 14),
+            font=("Microsoft YaHei UI", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             buttonbackground=self.COLORS["bg_input"],
@@ -467,7 +485,7 @@ class VideoToolkitApp:
         tk.Label(
             count_frame,
             text="（同一视频生成多个不同版本）",
-            font=("Microsoft YaHei UI", 12),
+            font=("Microsoft YaHei UI", 6),
             fg=self.COLORS["text_dim"],
             bg=self.COLORS["bg_card"],
         ).pack(side="left")
@@ -479,7 +497,7 @@ class VideoToolkitApp:
         self.dedup_btn = tk.Button(
             action_frame,
             text="🔄  开始去重处理",
-            font=("Microsoft YaHei UI", 18, "bold"),
+            font=("Microsoft YaHei UI", 9, "bold"),
             bg=self.COLORS["accent"],
             fg="white",
             activebackground=self.COLORS["accent_hover"],
@@ -501,7 +519,7 @@ class VideoToolkitApp:
         self.dedup_status_label = tk.Label(
             action_frame,
             text="就绪" if self.deduplicator else "⚠️ FFmpeg未找到，去重功能不可用",
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             fg=self.COLORS["text_dim"] if self.deduplicator else self.COLORS["warning"],
             bg=self.COLORS["bg_dark"],
         )
@@ -514,7 +532,7 @@ class VideoToolkitApp:
         self.dedup_log = scrolledtext.ScrolledText(
             log_frame,
             height=6,
-            font=("Consolas", 12),
+            font=("Consolas", 6),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -536,7 +554,7 @@ class VideoToolkitApp:
         tk.Label(
             batch_dl_frame,
             text="📥 批量下载",
-            font=("Microsoft YaHei UI", 16, "bold"),
+            font=("Microsoft YaHei UI", 8, "bold"),
             fg=self.COLORS["text"],
             bg=self.COLORS["bg_card"],
         ).pack(anchor="w")
@@ -544,7 +562,7 @@ class VideoToolkitApp:
         tk.Label(
             batch_dl_frame,
             text="每行输入一个视频链接：",
-            font=("Microsoft YaHei UI", 12),
+            font=("Microsoft YaHei UI", 6),
             fg=self.COLORS["text_dim"],
             bg=self.COLORS["bg_card"],
         ).pack(anchor="w", pady=(4, 8))
@@ -552,7 +570,7 @@ class VideoToolkitApp:
         self.batch_urls_text = tk.Text(
             batch_dl_frame,
             height=6,
-            font=("Consolas", 13),
+            font=("Consolas", 7),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -570,7 +588,7 @@ class VideoToolkitApp:
             opts_row,
             text="下载后自动去重",
             variable=self.batch_auto_dedup,
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             fg=self.COLORS["text"],
             bg=self.COLORS["bg_card"],
             selectcolor=self.COLORS["bg_input"],
@@ -579,28 +597,49 @@ class VideoToolkitApp:
 
         tk.Label(
             opts_row,
-            text="去重模式:",
-            font=("Microsoft YaHei UI", 13),
+            text="去重平台:",
+            font=("Microsoft YaHei UI", 7),
             fg=self.COLORS["text_dim"],
             bg=self.COLORS["bg_card"],
         ).pack(side="left", padx=(25, 8))
 
-        self.batch_preset_var = tk.StringVar(value="中度去重")
-        preset_combo = ttk.Combobox(
+        self.batch_platform_var = tk.StringVar(value="抖音")
+        batch_platform_combo = ttk.Combobox(
+            opts_row,
+            textvariable=self.batch_platform_var,
+            values=get_platform_names(),
+            state="readonly",
+            width=8,
+            font=("Microsoft YaHei UI", 7),
+        )
+        batch_platform_combo.pack(side="left")
+        batch_platform_combo.bind("<<ComboboxSelected>>", self._on_batch_platform_changed)
+
+        tk.Label(
+            opts_row,
+            text="模式:",
+            font=("Microsoft YaHei UI", 7),
+            fg=self.COLORS["text_dim"],
+            bg=self.COLORS["bg_card"],
+        ).pack(side="left", padx=(12, 4))
+
+        self.batch_preset_var = tk.StringVar()
+        self.batch_mode_combo = ttk.Combobox(
             opts_row,
             textvariable=self.batch_preset_var,
-            values=get_preset_names(),
             state="readonly",
-            width=18,
-            font=("Microsoft YaHei UI", 13),
+            width=28,
+            font=("Microsoft YaHei UI", 7),
         )
-        preset_combo.pack(side="left")
+        self.batch_mode_combo.pack(side="left")
+        # 初始化模式列表
+        self._on_batch_platform_changed()
 
         # 批量执行按钮
         self.batch_btn = tk.Button(
             batch_dl_frame,
             text="🚀  开始批量处理",
-            font=("Microsoft YaHei UI", 16, "bold"),
+            font=("Microsoft YaHei UI", 8, "bold"),
             bg=self.COLORS["accent"],
             fg="white",
             activebackground=self.COLORS["accent_hover"],
@@ -622,7 +661,7 @@ class VideoToolkitApp:
         self.batch_status = tk.Label(
             batch_dl_frame,
             text="就绪",
-            font=("Microsoft YaHei UI", 13),
+            font=("Microsoft YaHei UI", 7),
             fg=self.COLORS["text_dim"],
             bg=self.COLORS["bg_card"],
         )
@@ -635,7 +674,7 @@ class VideoToolkitApp:
         self.batch_log = scrolledtext.ScrolledText(
             log_frame,
             height=10,
-            font=("Consolas", 12),
+            font=("Consolas", 6),
             bg=self.COLORS["bg_input"],
             fg=self.COLORS["text"],
             insertbackground=self.COLORS["text"],
@@ -667,6 +706,67 @@ class VideoToolkitApp:
         path = filedialog.askdirectory(title="选择输出目录")
         if path:
             self.dedup_output_var.set(path)
+
+    def _on_platform_changed(self):
+        """平台切换时刷新模式列表"""
+        self._refresh_mode_list()
+
+    def _refresh_mode_list(self):
+        """刷新模式选择列表"""
+        # 清空旧内容
+        for widget in self.mode_container.winfo_children():
+            widget.destroy()
+
+        platform = self.platform_var.get()
+        modes = get_platform_modes(platform)
+
+        if not modes:
+            return
+
+        # 默认选第一个模式
+        if platform == "通用":
+            default_mode = "中度去重"
+        else:
+            default_mode = modes[0]
+        self.preset_var.set(default_mode)
+
+        for mode_name in modes:
+            desc = get_mode_description(platform, mode_name)
+            row = tk.Frame(self.mode_container, bg=self.COLORS["bg_card"])
+            row.pack(fill="x", pady=2)
+
+            rb = tk.Radiobutton(
+                row,
+                text=f"  {mode_name}",
+                variable=self.preset_var,
+                value=mode_name,
+                font=("Microsoft YaHei UI", 7),
+                fg=self.COLORS["text"],
+                bg=self.COLORS["bg_card"],
+                selectcolor=self.COLORS["bg_input"],
+                activebackground=self.COLORS["bg_card"],
+                activeforeground=self.COLORS["accent"],
+                cursor="hand2",
+            )
+            rb.pack(side="left")
+
+            if desc:
+                tk.Label(
+                    row,
+                    text=f"  {desc}",
+                    font=("Microsoft YaHei UI", 6),
+                    fg=self.COLORS["text_dim"],
+                    bg=self.COLORS["bg_card"],
+                ).pack(side="left")
+
+    def _get_current_preset_key(self):
+        """获取当前选择的预设key（用于PRESETS字典查找）"""
+        platform = self.platform_var.get()
+        mode = self.preset_var.get()
+        if platform == "通用":
+            return mode
+        else:
+            return f"{platform}/{mode}"
 
     def _log(self, widget, message):
         """向日志控件追加消息"""
@@ -730,7 +830,7 @@ class VideoToolkitApp:
             return
 
         output_dir = self.dedup_output_var.get()
-        preset_name = self.preset_var.get()
+        preset_name = self._get_current_preset_key()
         gen_count = self.gen_count_var.get()
 
         self.dedup_btn.configure(state="disabled", text="⏳ 处理中...")
@@ -783,6 +883,26 @@ class VideoToolkitApp:
 
         threading.Thread(target=do_dedup, daemon=True).start()
 
+    def _on_batch_platform_changed(self, event=None):
+        """批量处理平台切换时更新模式列表"""
+        platform = self.batch_platform_var.get()
+        modes = get_platform_modes(platform)
+        self.batch_mode_combo["values"] = modes
+        if modes:
+            if platform == "通用":
+                self.batch_preset_var.set("中度去重")
+            else:
+                self.batch_preset_var.set(modes[0])
+
+    def _get_batch_preset_key(self):
+        """获取批量处理当前选择的预设key"""
+        platform = self.batch_platform_var.get()
+        mode = self.batch_preset_var.get()
+        if platform == "通用":
+            return mode
+        else:
+            return f"{platform}/{mode}"
+
     def _start_batch(self):
         """开始批量处理"""
         urls_text = self.batch_urls_text.get("1.0", "end").strip()
@@ -796,7 +916,7 @@ class VideoToolkitApp:
             return
 
         auto_dedup = self.batch_auto_dedup.get()
-        preset = self.batch_preset_var.get()
+        preset = self._get_batch_preset_key()
         self.batch_btn.configure(state="disabled", text="⏳ 批量处理中...")
 
         def do_batch():

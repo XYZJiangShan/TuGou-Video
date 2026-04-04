@@ -32,5 +32,6 @@ scan_ks_frames.py
 ultimate_frame_analysis.py
 CLI_API_SPEC.md
 
-# WorkBuddy internal
+# WorkBuddy / CodeBuddy internal
 .workbuddy/
+.codebuddy/
