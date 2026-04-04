@@ -1,0 +1,36 @@
+# Binary tools
+ffmpeg.exe
+ffprobe.exe
+
+# Output and temp directories
+output/
+downloads/
+temp_analysis/
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Env
+.env
+venv/
+
+# Test/temp scripts (不提交)
+test_*.py
+quick_test*.py
+quick_probe*.py
+diagnose_*.py
+verify_*.py
+analyze_*.py
+compare_*.py
+extract_frames.py
+deep_analysis.py
+run_geometric_test.py
+scan_ks_frames.py
+ultimate_frame_analysis.py
+CLI_API_SPEC.md
+
+# WorkBuddy internal
+.workbuddy/
