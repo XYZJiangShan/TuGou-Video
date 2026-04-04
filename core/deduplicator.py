@@ -96,7 +96,8 @@ class DedupConfig:
     replace_skip_start: int = 60        # 跳过前N帧不替换（保护片头）
     replace_mode: str = "v4"            # 帧替换模式: v3=实时enable条件模糊, v4=预生成混淆帧overlay(夜猫方式)
     frame_duplicate: bool = False       # 帧复制翻倍（夜猫方式：每帧复制一次，帧数×2）
-    duplicate_skip_ratio: float = 0.5   # 前N%的帧只做复制不替换（0.5=前50%只复制，后50%复制+替换）
+    duplicate_skip_ratio: float = 0.15  # 前N%的帧只做纯复制不替换（0.15=前15%纯复制，之后偶数帧=混淆帧）
+    confuse_frame_image: str = ""       # 外部混淆帧图片路径（空=自动生成碎片拼贴）
 
     # ---- 平台专属设置 ----
     target_codec: str = "h264"          # 编码器: h264 / hevc / auto
@@ -205,16 +206,16 @@ PLATFORM_PRESETS = {
             gpu_acceleration=False,
         ),
         "模式3 - 混淆帧替换(v4夜猫)": DedupConfig(
-            # 核心: 帧复制翻倍 + 前50%只复制 + 后50%混淆帧替换（完整夜猫策略）
-            # 夜猫分析: 原始69帧→137帧(翻倍), 前137帧只复制, 之后才换帧
-            # 策略: 帧复制改变帧级指纹 + 混淆帧破坏内容hash + 底噪混入
+            # 核心: 保持原帧率 + 前2秒纯播放 + 偶数帧混淆替换（夜猫策略）
+            # 使用夜猫导出的混淆帧图片，前2秒不动，之后奇数=原始帧/偶数=混淆帧
             frame_replace=True,
             replace_mode="v4",
             replace_ratio=0.50,
-            replace_interval=2,         # 后半段一帧好一帧坏
+            replace_interval=2,         # 偶数帧=混淆帧
             replace_skip_start=30,      # 非翻倍模式的fallback
-            frame_duplicate=True,       # 帧复制翻倍（夜猫核心）
-            duplicate_skip_ratio=0.5,   # 前50%只复制不替换
+            frame_duplicate=True,       # 启用夜猫策略（偶数帧混淆）
+            duplicate_skip_ratio=0.15,  # 已不使用（改为固定2秒）
+            confuse_frame_image="assets/yemao_confuse_frame.png",  # 夜猫混淆帧
             # 画面: 色彩偏移 + 微调（配合快手HEVC重编码）
             adjust_brightness=True, brightness_value=0.02,
             adjust_contrast=True, contrast_value=1.02,
@@ -1702,9 +1703,10 @@ class VideoDeduplicator:
         6. 平台发布后重编码会洗掉混淆帧，播放正常
         
         关键参数：
-        - frame_duplicate: 是否帧复制翻倍（True=夜猫完整策略）
-        - duplicate_skip_ratio: 前N%的帧只做复制不替换（0.5=前50%跳过）
-        - replace_interval: 后半段每N帧替换1帧（2=一帧好一帧坏）
+        - frame_duplicate: 是否启用夜猫策略（True=偶数帧混淆替换）
+        - 前2秒纯播放不混淆，之后偶数帧=混淆帧/奇数帧=原始帧
+        - 保持原始帧率不变，总帧数≈原始帧数
+        - confuse_frame_image: 外部混淆帧图片路径（空=自动生成碎片拼贴）
         """
         import tempfile
         
@@ -1787,33 +1789,47 @@ class VideoDeduplicator:
             if not os.path.exists(first_frame_path):
                 raise RuntimeError("提取首帧失败")
             
-            # ---- 第2步：生成碎片拼贴混淆帧（夜猫方式） ----
-            try:
-                from PIL import Image, ImageFilter, ImageEnhance
-                confuse_frame_path = self._generate_mosaic_confuse_frame(
-                    first_frame_path, confuse_frame_path,
-                    target_w, target_h, config
-                )
-            except ImportError:
-                # PIL不可用时降级为FFmpeg模糊方式
-                blur_radius = random.randint(25, 45)
-                hue_val = random.uniform(15, 40)
-                confuse_vf = (
-                    f"boxblur=lr={blur_radius}:lp=5,"
-                    f"hue=h={hue_val:.1f}:s=0.7,"
-                    f"noise=alls=30:allf=t+u,"
-                    f"eq=brightness=0.08:contrast=0.85"
-                )
-                if config.upscale_1080p and height < 1080:
-                    confuse_vf = f"scale={target_w}:{target_h}:flags={config.upscale_method}," + confuse_vf
-                confuse_cmd = [
-                    self.ffmpeg_path, "-y",
-                    "-i", first_frame_path,
-                    "-vf", confuse_vf,
-                    "-q:v", "2",
-                    confuse_frame_path
-                ]
-                self._run(confuse_cmd, capture_output=True, timeout=30)
+            # ---- 第2步：生成或加载混淆帧 ----
+            confuse_img = config.confuse_frame_image
+            # 相对路径基于项目根目录解析
+            if confuse_img and not os.path.isabs(confuse_img):
+                base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                confuse_img = os.path.join(base_dir, confuse_img)
+            
+            if confuse_img and os.path.exists(confuse_img):
+                # 使用外部混淆帧图片（如夜猫导出的帧）
+                import shutil
+                shutil.copy2(confuse_img, confuse_frame_path)
+                if callback:
+                    callback(13, f"使用外部混淆帧: {os.path.basename(confuse_img)}")
+            else:
+                # 自动生成碎片拼贴混淆帧（夜猫方式）
+                try:
+                    from PIL import Image, ImageFilter, ImageEnhance
+                    confuse_frame_path = self._generate_mosaic_confuse_frame(
+                        first_frame_path, confuse_frame_path,
+                        target_w, target_h, config
+                    )
+                except ImportError:
+                    # PIL不可用时降级为FFmpeg模糊方式
+                    blur_radius = random.randint(25, 45)
+                    hue_val = random.uniform(15, 40)
+                    confuse_vf = (
+                        f"boxblur=lr={blur_radius}:lp=5,"
+                        f"hue=h={hue_val:.1f}:s=0.7,"
+                        f"noise=alls=30:allf=t+u,"
+                        f"eq=brightness=0.08:contrast=0.85"
+                    )
+                    if config.upscale_1080p and height < 1080:
+                        confuse_vf = f"scale={target_w}:{target_h}:flags={config.upscale_method}," + confuse_vf
+                    confuse_cmd = [
+                        self.ffmpeg_path, "-y",
+                        "-i", first_frame_path,
+                        "-vf", confuse_vf,
+                        "-q:v", "2",
+                        confuse_frame_path
+                    ]
+                    self._run(confuse_cmd, capture_output=True, timeout=30)
             
             if not os.path.exists(confuse_frame_path):
                 raise RuntimeError("生成混淆帧失败")
@@ -1823,24 +1839,25 @@ class VideoDeduplicator:
             interval = config.replace_interval
             
             if use_dup:
-                # 夜猫完整策略：帧复制翻倍 + 前段跳过 + 后段替换
-                # 翻倍后总帧数
-                dup_total = total_frames * 2
-                # 前skip_ratio部分只复制不替换
-                skip_frames = int(dup_total * config.duplicate_skip_ratio)
-                # 确保skip_frames是偶数（因为帧成对出现）
-                skip_frames = skip_frames + (skip_frames % 2)
+                # 夜猫策略：保持原始帧率 + 前2秒纯播放 + 之后偶数帧=混淆帧
+                # 不翻倍fps！总帧数≈原始帧数
+                # duplicate_skip_ratio 控制前面纯播放的比例（固定约2秒）
+                
+                # 前N帧纯播放不混淆（约2秒 = fps*2）
+                skip_frames = int(fps * 2)  # 固定2秒的纯播放段
+                # 对齐到偶数（混淆帧在偶数位）
+                if skip_frames % 2 != 0:
+                    skip_frames += 1
                 
                 if callback:
-                    callback(15, f"帧替换v4(夜猫策略): 原始{total_frames}帧→翻倍{dup_total}帧, "
-                             f"前{skip_frames}帧只复制, 之后每{interval}帧替换1帧...")
+                    callback(15, f"帧替换v4(夜猫策略): {total_frames}帧(保持原帧率{fps}fps), "
+                             f"前{skip_frames}帧({skip_frames/fps:.1f}秒)纯播放, 之后奇数=原始/偶数=混淆...")
                 
-                # FFmpeg filter_complex逻辑:
-                # 1. fps翻倍（每帧输出2次）→ 帧复制
-                # 2. overlay混淆帧（enable条件: 帧号>=skip_frames 且 间隔匹配）
-                dup_fps = fps * 2  # 翻倍帧率实现帧复制
+                dup_fps = fps  # 不翻倍！保持原始帧率
                 
-                enable_expr = f"gte(n\\,{skip_frames})*not(mod(n-{skip_frames}\\,{interval}))"
+                # enable表达式: 帧号>=skip_frames 且 帧号为偶数
+                # 偶数帧=混淆帧, 奇数帧=原始帧
+                enable_expr = f"gte(n\\,{skip_frames})*not(mod(n\\,2))"
             else:
                 # 非翻倍模式：用原来的skip_start逻辑
                 skip = config.replace_skip_start
@@ -1891,21 +1908,31 @@ class VideoDeduplicator:
             
             # ---- 第4步：构建filter_complex ----
             # 输入0=视频, 输入1=混淆帧图片(loop循环)
-            # 帧复制翻倍通过 fps=dup_fps 实现（原30fps→60fps，每帧自动复制一次）
-            filter_complex = (
-                # 视频流：帧率(可能翻倍)+缩放+全局滤镜
-                f"[0:v]fps={dup_fps},{vf_scale}setsar=1,{global_vf}"
-                f"format=yuv420p[vmain];"
-                # 混淆帧流：loop循环+缩放到相同尺寸
-                f"[1:v]loop=loop=-1:size=1:start=0,"
-                f"scale={target_w}:{target_h}:flags=bilinear,"
-                f"setsar=1,format=yuv420p[vconf];"
-                # overlay：在选中帧位置用混淆帧完全覆盖原始帧
-                f"[vmain][vconf]overlay=0:0:enable='{enable_expr}',"
-                # 时间戳归一化（用翻倍后的帧率）
-                f"setpts=N/{dup_fps}/TB"
-                f"[out]"
-            )
+            if use_dup:
+                # 夜猫策略：保持原始帧率，偶数帧overlay混淆帧
+                # 不翻倍fps，不删帧，总帧数≈原始帧数
+                filter_complex = (
+                    f"[0:v]{vf_scale}setsar=1,{global_vf}"
+                    f"format=yuv420p[vmain];"
+                    f"[1:v]loop=loop=-1:size=1:start=0,"
+                    f"scale={target_w}:{target_h}:flags=bilinear,"
+                    f"setsar=1,format=yuv420p[vconf];"
+                    f"[vmain][vconf]overlay=0:0:enable='{enable_expr}',"
+                    f"setpts=N/{dup_fps}/TB"
+                    f"[out]"
+                )
+            else:
+                # 非翻倍模式：直接fps+overlay
+                filter_complex = (
+                    f"[0:v]fps={dup_fps},{vf_scale}setsar=1,{global_vf}"
+                    f"format=yuv420p[vmain];"
+                    f"[1:v]loop=loop=-1:size=1:start=0,"
+                    f"scale={target_w}:{target_h}:flags=bilinear,"
+                    f"setsar=1,format=yuv420p[vconf];"
+                    f"[vmain][vconf]overlay=0:0:enable='{enable_expr}',"
+                    f"setpts=N/{dup_fps}/TB"
+                    f"[out]"
+                )
             
             # ---- 第4步：构建编码命令 ----
             cmd = [
