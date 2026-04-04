@@ -94,6 +94,7 @@ class DedupConfig:
     replace_ratio: float = 0.35         # 替换比例 (0.2~0.5，即20%~50%的帧被替换)
     replace_interval: int = 3           # 替换间隔 (每N帧替换1帧, 3=33%, 2=50%)
     replace_skip_start: int = 60        # 跳过前N帧不替换（保护片头）
+    replace_mode: str = "v4"            # 帧替换模式: v3=实时enable条件模糊, v4=预生成混淆帧overlay(夜猫方式)
 
     # ---- 平台专属设置 ----
     target_codec: str = "h264"          # 编码器: h264 / hevc / auto
@@ -123,9 +124,10 @@ class DedupConfig:
 PLATFORM_PRESETS = {
     "抖音": {
         "模式1 - 帧替换+多维微调": DedupConfig(
-            # 核心: 帧替换v3 + 1080p上采样 + 音频修改
+            # 核心: 帧替换v4(夜猫方式) + 1080p上采样 + 音频修改
             # 针对: 帧级指纹99.7% + 音频波纹99.2% + 语义理解
             frame_replace=True,
+            replace_mode="v4",
             replace_ratio=0.35,
             replace_interval=3,
             replace_skip_start=60,
@@ -154,34 +156,51 @@ PLATFORM_PRESETS = {
         ),
     },
     "快手": {
-        "模式1 - 色彩偏移+HEVC编码": DedupConfig(
-            # 核心: 色彩偏移 + 音频混淆 + HEVC编码（权重加成）
-            # 针对: DCT系数(ResNet) + MFCC + ERNIE3.0
-            frame_replace=True,
-            replace_ratio=0.35,
-            replace_interval=3,
-            replace_skip_start=60,
-            # 画面: 色彩偏移为主（干扰DCT系数）
-            adjust_brightness=True, brightness_value=0.01,
-            adjust_contrast=True, contrast_value=1.01,
-            adjust_saturation=True, saturation_value=1.03,
-            hue_shift=2.0,
-            color_balance_rs=0.02,
-            color_balance_gs=-0.01,
-            sharpen=True, denoise=False,
-            crop_edges=True, crop_percent=0.99,
-            add_invisible_watermark=True,
-            # 速度不改（快手对VFR敏感）
+        "模式1 - GPU高速(VFR插帧)": DedupConfig(
+            # 夜猫模式A复刻: h264_nvenc + Main + VFR帧数翻倍 + mono音频 + MKV
+            # 核心策略: 帧数翻倍(VFR) + GPU编码 + 音频降mono
+            # 特殊处理: 走 _apply_kuaishou_mode_a 专用方法
+            frame_stuffing=True,           # 复用 frame_stuffing 作为触发标记
+            stuffing_mode="kuaishou_a",    # 自定义模式名，在 process() 里识别
+            # 画面微调（不需要太多，VFR插帧本身就是主力）
+            adjust_brightness=False,
+            adjust_contrast=False,
+            adjust_saturation=False,
+            sharpen=False, denoise=False,
+            crop_edges=False,
+            add_invisible_watermark=False,
             speed_change=False,
-            trim_head=True, trim_head_frames=2,
-            trim_tail=True, trim_tail_seconds=0.1,
-            # 音频: 变调 + 底噪混入（干扰MFCC）
-            audio_pitch_shift=True, audio_pitch_semitones=0.5,
-            audio_noise_mix=True, audio_noise_db=-26.0,
+            trim_head=False,
+            trim_tail=False,
+            audio_pitch_shift=False,
             # 元数据
             modify_metadata=True, randomize_md5=True,
-            # 平台参数: HEVC编码（快手有权重加成）
-            target_codec="hevc",
+            # 平台参数
+            target_codec="h264",
+            gpu_acceleration=True,
+        ),
+        "模式2 - CPU精确(444色度)": DedupConfig(
+            # 夜猫模式B复刻: libx264 + High 4:4:4 Predictive + yuv444p + VFR帧数翻倍 + MKV
+            # 核心策略: yuv444p色度空间变换彻底改变色彩指纹hash
+            # 特殊处理: 走 _apply_kuaishou_mode_b 专用方法
+            frame_stuffing=True,
+            stuffing_mode="kuaishou_b",
+            # 画面不调（444p本身就改变了所有色彩数据）
+            adjust_brightness=False,
+            adjust_contrast=False,
+            adjust_saturation=False,
+            sharpen=False, denoise=False,
+            crop_edges=False,
+            add_invisible_watermark=False,
+            speed_change=False,
+            trim_head=False,
+            trim_tail=False,
+            audio_pitch_shift=False,
+            # 元数据
+            modify_metadata=True, randomize_md5=True,
+            # 平台参数
+            target_codec="h264",
+            gpu_acceleration=False,
         ),
     },
     "小红书": {
@@ -215,9 +234,10 @@ PLATFORM_PRESETS = {
     },
     "B站": {
         "模式1 - 帧替换+不二压": DedupConfig(
-            # 核心: 帧替换 + 画面调整 + 不二压参数（≤6000kbps）
+            # 核心: 帧替换v4(夜猫方式) + 画面调整 + 不二压参数（≤6000kbps）
             # 针对: ResNet50+Faiss工业级检索 + 霍夫变换精排
             frame_replace=True,
+            replace_mode="v4",
             replace_ratio=0.35,
             replace_interval=3,
             replace_skip_start=60,
@@ -350,6 +370,7 @@ PLATFORM_PRESETS = {
         ),
         "智能帧替换": DedupConfig(
             frame_replace=True,
+            replace_mode="v4",
             replace_ratio=0.35,
             replace_interval=3,
             replace_skip_start=60,
@@ -1027,6 +1048,234 @@ class VideoDeduplicator:
         
         return output_path
 
+    def _apply_kuaishou_mode_a(self, input_path, output_path, config,
+                                width, height, fps, temp_dir, callback=None):
+        """
+        快手模式A — GPU高速重编码
+        
+        策略（基于夜猫模式A逆向，去掉帧数翻倍）：
+        ============================
+        - 编码器: h264_nvenc (GPU高速)
+        - Profile: Main, 无B帧, refs=1
+        - 音频: stereo→mono (改变音频指纹)
+        - 容器: MKV (不同于原始MP4)
+        - 不做帧数翻倍（减少体积膨胀，先测试纯重编码去重效果）
+        """
+        if callback:
+            callback(10, "快手模式A(GPU高速): 分析视频参数...")
+        
+        # 获取视频时长
+        duration_total = None
+        try:
+            probe_cmd = [
+                self.ffprobe_path, "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path
+            ]
+            result = self._run(probe_cmd, capture_output=True, timeout=15)
+            duration_total = float(result.stdout.strip())
+        except Exception:
+            pass
+        
+        if callback:
+            callback(15, f"快手模式A: h264_nvenc + Main + mono + MKV...")
+        
+        # 输出路径改为MKV
+        if not output_path.lower().endswith(".mkv"):
+            output_path = os.path.splitext(output_path)[0] + ".mkv"
+        
+        # 音频降为mono（改变音频指纹）
+        audio_fc = "[0:a]pan=mono|c0=0.5*c0+0.5*c1,aformat=sample_rates=44100[aout]"
+        
+        cmd = [
+            self.ffmpeg_path, "-y",
+            "-i", input_path,
+            "-filter_complex", audio_fc,
+            "-map", "0:v",
+            "-map", "[aout]",
+        ]
+        
+        # h264_nvenc 编码（Main profile, no B-frames）
+        cmd.extend([
+            "-c:v", "h264_nvenc",
+            "-preset", "p4",
+            "-profile:v", "main",
+            "-rc", "vbr",
+            "-cq", "20",
+            "-b:v", "0",
+            "-maxrate", "15000k",
+            "-bufsize", "15000k",
+            "-g", str(int(fps * 4)),
+            "-bf", "0",               # 无B帧
+            "-refs", "1",
+        ])
+        
+        cmd.extend([
+            "-c:a", "aac", "-b:a", "128k",
+            "-ar", "44100",
+            "-ac", "1",                # mono
+            "-pix_fmt", "yuv420p",
+        ])
+        
+        # 随机元数据
+        if config.modify_metadata:
+            cmd.extend([
+                "-metadata", f"title=vid_{uuid.uuid4().hex[:12]}",
+                "-metadata", f"comment={uuid.uuid4().hex}",
+                "-metadata", f"creation_time={int(time.time())}",
+                "-metadata", f"encoder=Lavf",
+            ])
+        
+        cmd.append(output_path)
+        
+        if callback:
+            callback(20, f"快手模式A: h264_nvenc重编码 + mono...")
+        
+        process = self._popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        
+        stderr_output = []
+        for line in process.stderr:
+            stderr_output.append(line)
+            if callback and duration_total:
+                time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})', line)
+                if time_match:
+                    h, m, s, cs = map(int, time_match.groups())
+                    current = h * 3600 + m * 60 + s + cs / 100.0
+                    progress = min(90, int(20 + (current / duration_total) * 70))
+                    speed_match = re.search(r'speed=\s*([\d.]+)x', line)
+                    speed = speed_match.group(1) if speed_match else "?"
+                    callback(progress, f"快手A处理中... {current:.1f}s / {duration_total:.1f}s ({speed}x)")
+        
+        process.wait()
+        
+        if process.returncode != 0:
+            error_text = "".join(stderr_output[-30:])
+            raise RuntimeError(f"快手模式A处理失败:\n{error_text}")
+        
+        if callback:
+            callback(95, "快手模式A(GPU高速)完成!")
+        
+        return output_path
+
+    def _apply_kuaishou_mode_b(self, input_path, output_path, config,
+                                width, height, fps, temp_dir, callback=None):
+        """
+        快手模式B — CPU精确/444色度重编码
+        
+        策略（基于夜猫模式B逆向，去掉帧数翻倍）：
+        ============================
+        - 编码器: libx264 (CPU软编码)
+        - Profile: High 4:4:4 Predictive, Level: 6.2
+        - 像素格式: yuv444p（核心！色度不降采样，彻底改变色彩指纹hash）
+        - 有B帧 (对齐夜猫)
+        - 音频: stereo (保持)
+        - 容器: MKV
+        - 不做帧数翻倍（先测试纯444p重编码去重效果）
+        
+        核心原理：
+        yuv420p→yuv444p 改变了色度采样方式，每个像素的色彩信息完全不同。
+        平台的指纹hash基于像素值计算，444p重编码后指纹彻底废掉。
+        """
+        if callback:
+            callback(10, "快手模式B(CPU精确/444p): 分析视频参数...")
+        
+        # 获取视频时长
+        duration_total = None
+        try:
+            probe_cmd = [
+                self.ffprobe_path, "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path
+            ]
+            result = self._run(probe_cmd, capture_output=True, timeout=15)
+            duration_total = float(result.stdout.strip())
+        except Exception:
+            pass
+        
+        if callback:
+            callback(15, f"快手模式B: libx264 + High 4:4:4 + yuv444p + MKV...")
+        
+        # 输出路径改为MKV
+        if not output_path.lower().endswith(".mkv"):
+            output_path = os.path.splitext(output_path)[0] + ".mkv"
+        
+        cmd = [
+            self.ffmpeg_path, "-y",
+            "-i", input_path,
+            "-map", "0:v",
+            "-map", "0:a",
+        ]
+        
+        # libx264 编码（High 4:4:4 Predictive + Level 6.2）
+        cmd.extend([
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-profile:v", "high444",     # High 4:4:4 Predictive
+            "-level", "6.2",
+            "-crf", "20",
+            "-maxrate", "15000k",
+            "-bufsize", "15000k",
+            "-g", str(int(fps * 4)),
+            "-bf", "2",                  # 有B帧
+            "-b_strategy", "2",
+            "-refs", "1",
+            "-sc_threshold", "0",
+        ])
+        
+        cmd.extend([
+            "-pix_fmt", "yuv444p",       # 核心！444色度不降采样
+            "-c:a", "aac", "-b:a", "128k",
+            "-ar", "44100",
+        ])
+        
+        # 随机元数据
+        if config.modify_metadata:
+            cmd.extend([
+                "-metadata", f"title=vid_{uuid.uuid4().hex[:12]}",
+                "-metadata", f"comment={uuid.uuid4().hex}",
+                "-metadata", f"creation_time={int(time.time())}",
+                "-metadata", f"ENCODER=Lavf61.7.100",
+            ])
+        
+        cmd.append(output_path)
+        
+        if callback:
+            callback(20, f"快手模式B: libx264 High 4:4:4 + yuv444p...")
+        
+        process = self._popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
+        
+        stderr_output = []
+        for line in process.stderr:
+            stderr_output.append(line)
+            if callback and duration_total:
+                time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})', line)
+                if time_match:
+                    h, m, s, cs = map(int, time_match.groups())
+                    current = h * 3600 + m * 60 + s + cs / 100.0
+                    progress = min(90, int(20 + (current / duration_total) * 70))
+                    speed_match = re.search(r'speed=\s*([\d.]+)x', line)
+                    speed = speed_match.group(1) if speed_match else "?"
+                    callback(progress, f"快手B处理中... {current:.1f}s / {duration_total:.1f}s ({speed}x)")
+        
+        process.wait()
+        
+        if process.returncode != 0:
+            error_text = "".join(stderr_output[-30:])
+            raise RuntimeError(f"快手模式B处理失败:\n{error_text}")
+        
+        if callback:
+            callback(95, "快手模式B(CPU/444p)完成!")
+        
+        return output_path
+        
+        return output_path
+
     def _apply_frame_replace(self, input_path, output_path, config, video_info, callback=None):
         """
         智能帧替换 v3 — 保持原始帧率，替换部分帧为"模糊化近似帧"（不闪烁）
@@ -1320,6 +1569,350 @@ class VideoDeduplicator:
         
         return output_path
 
+    def _apply_frame_replace_v4(self, input_path, output_path, config, video_info, callback=None):
+        """
+        帧替换 v4 — 预生成混淆帧 + overlay替换（夜猫方式）
+        
+        核心原理：
+        ==================
+        1. 从视频提取第一帧
+        2. 对该帧做强模糊+色偏+噪点+亮度偏移 → 生成一张固定的"混淆帧"PNG
+        3. 用overlay滤镜按间隔把这张图覆盖到视频帧上（enable条件控制）
+        4. 所有被替换的帧都是同一张图 → 跟夜猫分析结果一致
+        5. 平台发布后重编码会洗掉这些替换帧，播放效果正常
+        
+        与v3的区别：
+        - v3: 对每帧实时做enable条件模糊（每帧模糊结果略有不同）
+        - v4: 预生成一张固定混淆帧图片，按间隔overlay上去（所有替换帧完全相同）
+        - v4更接近夜猫的实际做法（夜鹰分析看到的"隔一阵出现相同的奇怪图"）
+        """
+        import tempfile
+        
+        if callback:
+            callback(10, "帧替换v4: 分析视频参数...")
+        
+        # 获取视频尺寸和帧率
+        width, height, fps = 1920, 1080, 30
+        if video_info:
+            for stream in video_info.get("streams", []):
+                if stream.get("codec_type") == "video":
+                    width = int(stream.get("width", 1920))
+                    height = int(stream.get("height", 1080))
+                    fps_str = stream.get("r_frame_rate", "30/1")
+                    if "/" in fps_str:
+                        num, den = fps_str.split("/")
+                        fps = round(int(num) / max(int(den), 1))
+                    else:
+                        fps = int(float(fps_str))
+                    break
+        
+        # 如果启用上采样，目标分辨率改为1080p
+        target_w, target_h = width, height
+        if config.upscale_1080p and height < 1080:
+            target_h = 1080
+            target_w = int(width * (1080 / height))
+            target_w = target_w + (target_w % 2)
+        
+        # 获取视频时长
+        duration_total = None
+        try:
+            probe_cmd = [
+                self.ffprobe_path, "-v", "quiet",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                input_path
+            ]
+            result = self._run(probe_cmd, capture_output=True, timeout=15)
+            duration_total = float(result.stdout.strip())
+        except Exception:
+            pass
+        
+        # 创建临时目录
+        temp_dir = tempfile.mkdtemp(prefix="tugou_v4_")
+        first_frame_path = os.path.join(temp_dir, "first_frame.png")
+        confuse_frame_path = os.path.join(temp_dir, "confuse_frame.png")
+        
+        try:
+            if callback:
+                callback(12, "帧替换v4: 提取首帧并生成混淆帧...")
+            
+            # ---- 第1步：提取第一帧 ----
+            extract_cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", input_path,
+                "-vframes", "1",
+                "-q:v", "2",
+                first_frame_path
+            ]
+            self._run(extract_cmd, capture_output=True, timeout=30)
+            
+            if not os.path.exists(first_frame_path):
+                raise RuntimeError("提取首帧失败")
+            
+            # ---- 第2步：对首帧做强变换生成混淆帧 ----
+            # 随机参数（每次处理都不同，增加随机性）
+            blur_radius = random.randint(25, 45)
+            blur_power = random.randint(4, 7)
+            hue_val = random.uniform(15, 40)  # 较大色偏（因为只有一张图）
+            noise_strength = random.randint(20, 40)
+            bright_shift = random.uniform(0.05, 0.15)
+            sat_shift = random.uniform(0.6, 0.85)
+            
+            # 用FFmpeg处理首帧 → 混淆帧
+            # 强模糊 + 色偏 + 噪点 + 亮度/饱和度偏移
+            confuse_vf = (
+                f"boxblur=lr={blur_radius}:lp={blur_power},"
+                f"hue=h={hue_val:.1f}:s={sat_shift:.2f},"
+                f"noise=alls={noise_strength}:allf=t+u,"
+                f"eq=brightness={bright_shift:.3f}:contrast=0.85"
+            )
+            
+            # 如果有上采样，混淆帧也要匹配目标尺寸
+            if config.upscale_1080p and height < 1080:
+                confuse_vf = f"scale={target_w}:{target_h}:flags={config.upscale_method}," + confuse_vf
+            
+            confuse_cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", first_frame_path,
+                "-vf", confuse_vf,
+                "-q:v", "2",
+                confuse_frame_path
+            ]
+            self._run(confuse_cmd, capture_output=True, timeout=30)
+            
+            if not os.path.exists(confuse_frame_path):
+                raise RuntimeError("生成混淆帧失败")
+            
+            if callback:
+                callback(15, f"帧替换v4: 混淆帧已生成, 每{config.replace_interval}帧替换1帧...")
+            
+            # ---- 第3步：构建overlay滤镜链 ----
+            skip = config.replace_skip_start
+            interval = config.replace_interval
+            
+            # enable条件：帧号>=skip 且 (帧号-skip)%interval==0
+            enable_expr = f"gte(n\\,{skip})*not(mod(n-{skip}\\,{interval}))"
+            
+            # 上采样滤镜
+            vf_scale = ""
+            if config.upscale_1080p and height < 1080:
+                vf_scale = f"scale={target_w}:{target_h}:flags={config.upscale_method},"
+            
+            # --- 全局画面微调（对所有帧生效） ---
+            global_filters = []
+            if config.adjust_brightness and config.brightness_value != 0:
+                global_filters.append(f"eq=brightness={config.brightness_value:.3f}")
+            if config.adjust_contrast and config.contrast_value != 1.0:
+                global_filters.append(f"eq=contrast={config.contrast_value:.3f}")
+            if config.adjust_saturation and config.saturation_value != 1.0:
+                global_filters.append(f"eq=saturation={config.saturation_value:.3f}")
+            if config.adjust_gamma and config.gamma_value != 1.0:
+                global_filters.append(f"eq=gamma={config.gamma_value:.3f}")
+            if config.hue_shift != 0:
+                global_filters.append(f"hue=h={config.hue_shift:.1f}")
+            if config.color_balance_rs != 0 or config.color_balance_gs != 0:
+                global_filters.append(
+                    f"colorbalance=rs={config.color_balance_rs:.3f}:gs={config.color_balance_gs:.3f}"
+                )
+            if config.sharpen:
+                global_filters.append("unsharp=5:5:0.8:5:5:0.0")
+            if config.denoise:
+                global_filters.append("hqdn3d=2:2:3:3")
+            if config.crop_edges and config.crop_percent < 1.0:
+                global_filters.append(
+                    f"crop=iw*{config.crop_percent:.4f}:ih*{config.crop_percent:.4f}"
+                )
+            if config.slight_rotation and config.rotation_angle != 0:
+                angle_rad = config.rotation_angle * 3.14159 / 180
+                global_filters.append(
+                    f"rotate={angle_rad:.6f}:fillcolor=black@0"
+                )
+            
+            global_vf = ",".join(global_filters) + "," if global_filters else ""
+            
+            # filter_complex:
+            # 输入0=视频, 输入1=混淆帧图片(loop循环)
+            # 视频流做全局微调 → 混淆帧overlay上去(enable条件控制)
+            filter_complex = (
+                # 视频流：帧率+缩放+全局滤镜
+                f"[0:v]fps={fps},{vf_scale}setsar=1,{global_vf}"
+                f"format=yuv420p[vmain];"
+                # 混淆帧流：loop循环+缩放到相同尺寸
+                f"[1:v]loop=loop=-1:size=1:start=0,"
+                f"scale={target_w}:{target_h}:flags=bilinear,"
+                f"setsar=1,format=yuv420p[vconf];"
+                # overlay：在选中帧位置用混淆帧完全覆盖原始帧
+                f"[vmain][vconf]overlay=0:0:enable='{enable_expr}',"
+                # 时间戳归一化
+                f"setpts=N/{fps}/TB"
+                f"[out]"
+            )
+            
+            # ---- 第4步：构建编码命令 ----
+            cmd = [
+                self.ffmpeg_path, "-y",
+                "-i", input_path,
+                "-loop", "1", "-i", confuse_frame_path,
+            ]
+            
+            # 底噪混入需要额外输入源
+            if config.audio_noise_mix:
+                cmd.extend([
+                    "-f", "lavfi", "-i",
+                    "anoisesrc=d=3600:c=pink:r=44100:a=0.002"
+                ])
+                af_chain = ""
+                af_parts = []
+                if config.speed_change and config.speed_factor != 1.0:
+                    af_parts.append(f"atempo={config.speed_factor}")
+                if config.audio_pitch_shift and config.audio_pitch_semitones != 0:
+                    pitch_factor = 2 ** (config.audio_pitch_semitones / 12.0)
+                    af_parts.append(f"asetrate=44100*{pitch_factor:.6f}")
+                    af_parts.append("aresample=44100")
+                if af_parts:
+                    af_chain = ",".join(af_parts) + ","
+                
+                noise_db = config.audio_noise_db
+                noise_idx = 2  # 视频=0, 混淆帧=1, 噪声源=2
+                audio_fc = (
+                    f"[{noise_idx}:a]volume={noise_db}dB[noise];"
+                    f"[0:a]{af_chain}aformat=sample_rates=44100[amain];"
+                    f"[amain][noise]amix=inputs=2:duration=first:dropout_transition=0[aout]"
+                )
+                full_fc = filter_complex + ";" + audio_fc
+                cmd.extend(["-filter_complex", full_fc])
+                cmd.extend(["-map", "[out]", "-map", "[aout]"])
+            else:
+                cmd.extend(["-filter_complex", filter_complex])
+                cmd.extend(["-map", "[out]", "-map", "0:a?"])
+            
+            # 编码器选择
+            codec = config.target_codec or "h264"
+            if codec == "hevc":
+                if config.gpu_acceleration:
+                    cmd.extend(["-c:v", "hevc_nvenc"])
+                else:
+                    cmd.extend(["-c:v", "libx265", "-tag:v", "hvc1"])
+            else:
+                if config.gpu_acceleration:
+                    cmd.extend(["-c:v", "h264_nvenc"])
+                else:
+                    cmd.extend(["-c:v", "libx264"])
+            
+            cmd.extend([
+                "-preset", "medium",
+                "-profile:v", "high" if codec == "h264" else "main",
+                "-bf", "2",
+            ])
+            if codec == "h264":
+                cmd.extend(["-b_strategy", "2"])
+            
+            # 码率控制
+            if config.target_bitrate:
+                cmd.extend(["-b:v", config.target_bitrate])
+                if config.max_bitrate:
+                    cmd.extend(["-maxrate", config.max_bitrate, "-bufsize", config.max_bitrate])
+                else:
+                    cmd.extend(["-maxrate", config.target_bitrate, "-bufsize", config.target_bitrate])
+            else:
+                cmd.extend(["-crf", "20", "-maxrate", "15000k", "-bufsize", "15000k"])
+            
+            cmd.extend([
+                "-g", str(fps * 4),
+                "-sc_threshold", "0",
+                "-refs", "3",
+            ])
+            if codec == "h264":
+                cmd.extend(["-direct-pred", "auto"])
+            
+            if config.target_level:
+                cmd.extend(["-level", config.target_level])
+            
+            cmd.extend([
+                "-c:a", "aac", "-b:a", "192k",
+                "-r", str(fps),
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-shortest",  # 以最短流为准（防止loop无限）
+            ])
+            
+            # 音频滤镜（非底噪混入模式时）
+            if not config.audio_noise_mix:
+                af_parts = []
+                if config.speed_change and config.speed_factor != 1.0:
+                    af_parts.append(f"atempo={config.speed_factor}")
+                if config.audio_pitch_shift and config.audio_pitch_semitones != 0:
+                    pitch_factor = 2 ** (config.audio_pitch_semitones / 12.0)
+                    af_parts.append(f"asetrate=44100*{pitch_factor:.6f}")
+                    af_parts.append("aresample=44100")
+                if af_parts:
+                    cmd.extend(["-af", ",".join(af_parts)])
+            
+            # 去尾
+            if config.trim_tail and config.trim_tail_seconds > 0 and duration_total:
+                end_time = duration_total - config.trim_tail_seconds
+                if end_time > 0:
+                    cmd.extend(["-t", f"{end_time:.3f}"])
+            
+            # 随机元数据
+            if config.modify_metadata:
+                cmd.extend([
+                    "-metadata", f"title=vid_{uuid.uuid4().hex[:12]}",
+                    "-metadata", f"comment={uuid.uuid4().hex}",
+                    "-metadata", f"creation_time={int(time.time())}",
+                    "-metadata", f"encoder=custom_{random.randint(1000, 9999)}",
+                ])
+            
+            cmd.append(output_path)
+            
+            if callback:
+                replace_pct = int(100 / interval)
+                msg = f"帧替换v4(夜猫方式): {fps}fps, ~{replace_pct}%帧替换为预生成混淆帧"
+                if config.upscale_1080p:
+                    msg += f", {width}x{height}->{target_w}x{target_h}"
+                callback(25, msg)
+            
+            # ---- 第5步：执行编码 ----
+            process = self._popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
+            
+            stderr_output = []
+            for line in process.stderr:
+                stderr_output.append(line)
+                if callback and duration_total:
+                    time_match = re.search(r'time=(\d{2}):(\d{2}):(\d{2})\.(\d{2})', line)
+                    if time_match:
+                        h, m, s, cs = map(int, time_match.groups())
+                        current = h * 3600 + m * 60 + s + cs / 100.0
+                        progress = min(90, int(25 + (current / duration_total) * 65))
+                        speed_match = re.search(r'speed=\s*([\d.]+)x', line)
+                        speed = speed_match.group(1) if speed_match else "?"
+                        callback(progress, f"帧替换v4处理中... {current:.1f}s / {duration_total:.1f}s ({speed}x)")
+            
+            process.wait()
+            
+            if process.returncode != 0:
+                error_text = "".join(stderr_output[-30:])
+                raise RuntimeError(f"帧替换v4处理失败:\n{error_text}")
+            
+            if callback:
+                callback(95, "帧替换v4完成!(预生成混淆帧overlay,发布后自动恢复)")
+            
+        finally:
+            # 清理临时文件
+            try:
+                if os.path.exists(first_frame_path):
+                    os.remove(first_frame_path)
+                if os.path.exists(confuse_frame_path):
+                    os.remove(confuse_frame_path)
+                if os.path.exists(temp_dir):
+                    os.rmdir(temp_dir)
+            except Exception:
+                pass
+        
+        return output_path
+
     def _apply_frame_stuffing(self, input_path, output_path, config, video_info, callback=None):
         """
         帧膨胀处理 - 在视频帧间插入填充帧
@@ -1369,7 +1962,17 @@ class VideoDeduplicator:
         os.makedirs(temp_dir, exist_ok=True)
 
         try:
-            if config.stuffing_mode == "interleave":
+            if config.stuffing_mode == "kuaishou_a":
+                return self._apply_kuaishou_mode_a(
+                    input_path, output_path, config,
+                    width, height, fps, temp_dir, callback
+                )
+            elif config.stuffing_mode == "kuaishou_b":
+                return self._apply_kuaishou_mode_b(
+                    input_path, output_path, config,
+                    width, height, fps, temp_dir, callback
+                )
+            elif config.stuffing_mode == "interleave":
                 return self._stuffing_interleave(
                     input_path, output_path, config, 
                     width, height, fps, target_fps, temp_dir, callback
@@ -2031,6 +2634,12 @@ class VideoDeduplicator:
         elif config is None:
             config = DedupConfig()  # 默认中度去重
 
+        # 输出文件名增加时间戳后缀
+        from datetime import datetime
+        ts = datetime.now().strftime("%Y%m%d%H%M%S")
+        base, ext = os.path.splitext(output_path)
+        output_path = f"{base}{ts}{ext}"
+
         if callback:
             callback(5, "正在分析视频信息...")
 
@@ -2039,13 +2648,19 @@ class VideoDeduplicator:
 
         # ---- 智能帧替换处理（优先级最高，最隐蔽） ----
         if config.frame_replace:
+            mode_label = "v4预生成混淆帧" if config.replace_mode == "v4" else "v3实时模糊"
             if callback:
-                callback(8, "启动智能帧替换处理...")
+                callback(8, f"启动帧替换处理({mode_label})...")
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
             try:
-                self._apply_frame_replace(
-                    input_path, output_path, config, video_info, callback
-                )
+                if config.replace_mode == "v4":
+                    self._apply_frame_replace_v4(
+                        input_path, output_path, config, video_info, callback
+                    )
+                else:
+                    self._apply_frame_replace(
+                        input_path, output_path, config, video_info, callback
+                    )
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
                     if callback:
                         output_size = os.path.getsize(output_path) / 1024 / 1024
@@ -2066,21 +2681,30 @@ class VideoDeduplicator:
             if callback:
                 callback(8, "启动帧膨胀处理...")
             os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+            
+            # 快手专用模式不回退到常规处理
+            is_kuaishou = config.stuffing_mode in ("kuaishou_a", "kuaishou_b")
+            
             try:
-                self._apply_frame_stuffing(
+                # 返回值可能被改为MKV路径
+                actual_output = self._apply_frame_stuffing(
                     input_path, output_path, config, video_info, callback
                 )
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 1024:
+                if actual_output and os.path.exists(actual_output) and os.path.getsize(actual_output) > 1024:
                     if callback:
-                        output_size = os.path.getsize(output_path) / 1024 / 1024
+                        output_size = os.path.getsize(actual_output) / 1024 / 1024
                         input_size = os.path.getsize(input_path) / 1024 / 1024
                         ratio = output_size / input_size if input_size > 0 else 1.0
                         callback(100, f"处理完成! 输出: {output_size:.1f}MB (原始: {input_size:.1f}MB, {ratio:.1f}x)")
-                    return output_path
+                    return actual_output
                 else:
+                    if is_kuaishou:
+                        raise RuntimeError("快手专用模式输出异常")
                     if callback:
                         callback(12, "帧膨胀输出异常，回退到常规处理...")
             except Exception as e:
+                if is_kuaishou:
+                    raise  # 快手模式直接抛出，不回退
                 if callback:
                     callback(12, f"帧膨胀失败({e})，回退到常规处理...")
 
@@ -2322,7 +2946,8 @@ def get_preset_description(name):
     descriptions = {
         # ==== 平台专用 ====
         "抖音/模式1 - 帧替换+多维微调": "★抖音专用 帧替换v3+1080P上采样+音频变调+多维微调",
-        "快手/模式1 - 色彩偏移+HEVC编码": "★快手专用 色彩偏移+HEVC编码(权重加成)+音频底噪混入",
+        "快手/模式1 - GPU高速(VFR插帧)": "★快手专用 h264_nvenc+Main+mono音频+MKV重编码(夜猫A)",
+        "快手/模式2 - CPU精确(444色度)": "★快手专用 libx264+yuv444p+High4:4:4+MKV重编码(夜猫B)",
         "小红书/模式1 - 色相锐化+高码率": "★小红书专用 色相偏移+强锐化+15Mbps高码率上传",
         "B站/模式1 - 帧替换+不二压": "★B站专用 帧替换+不二压参数(≤6000kbps)+Level5",
         # ==== 通用 ====
