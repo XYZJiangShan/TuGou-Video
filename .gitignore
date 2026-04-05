@@ -32,6 +32,12 @@ scan_ks_frames.py
 ultimate_frame_analysis.py
 CLI_API_SPEC.md
 
+# Temp analysis scripts (underscore prefix)
+_*.py
+
+# Tools binaries (mkvtoolnix etc.)
+tools/
+
 # WorkBuddy / CodeBuddy internal
 .workbuddy/
 .codebuddy/
