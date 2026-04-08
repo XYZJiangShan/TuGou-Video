@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title 打包 EXE
+title 打包土狗总管理工具 EXE
 
 echo ====================================
-echo   打包土狗视频优化工具 EXE
+echo   打包土狗总管理工具 EXE
 echo ====================================
 echo.
 
@@ -39,31 +39,22 @@ echo 开始打包...
 echo.
 
 %PYTHON% -m PyInstaller ^
-    --name "土狗视频优化工具" ^
+    --name "土狗总管理工具" ^
     --onedir ^
     --windowed ^
     --icon "assets\icon.ico" ^
     --add-data "assets\icon.ico;assets" ^
     --add-data "assets\icon.png;assets" ^
-    --add-data "assets\yemao_confuse_frame.png;assets" ^
-    --add-data "core\*.py;core" ^
-    --hidden-import "requests" ^
-    --hidden-import "cv2" ^
-    --hidden-import "numpy" ^
-    --hidden-import "PIL" ^
     --noconfirm ^
     --clean ^
-    app.py
+    super_admin_tool.py
 
 echo.
 if %errorlevel% equ 0 (
     echo ====================================
     echo   [OK] 打包完成！
-    echo   输出: dist\土狗视频优化工具\
+    echo   输出: dist\土狗总管理工具\
     echo ====================================
-    echo.
-    echo [提示] 运行前需要把 ffmpeg.exe 和 ffprobe.exe
-    echo        复制到 dist\土狗视频优化工具\ 目录下
 ) else (
     echo [错误] 打包失败
 )
