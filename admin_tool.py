@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-土狗管理员 - 子管理员工具
+泥鳅管理员 - 子管理员工具
 用账号密码登录，按权限操作：
   - 生成充值Key（必须填写客户微信号/手机号/备注）
   - 查看用户列表（只显示自己Key关联的用户 + 归档状态）
@@ -120,13 +120,17 @@ class AdminAPI:
 class AdminTool(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("🐶 土狗管理员")
+        self.title("🐟 泥鳅管理员")
         self.geometry("1080x720")
         self.minsize(960, 620)
         self.configure(bg=C["bg"])
-        # 去掉默认图标
-        self._blank_icon = tk.PhotoImage(width=1, height=1)
-        self.iconphoto(True, self._blank_icon)
+        # 设置泥鳅图标
+        try:
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception:
+            pass
 
         self.api = AdminAPI(DEFAULT_SERVER)
         self._users_data = []
@@ -155,7 +159,7 @@ class AdminTool(tk.Tk):
                           highlightthickness=1, highlightbackground=C["border"])
         center.place(relx=0.5, rely=0.5, anchor="center")
 
-        tk.Label(center, text="🐶 土狗管理员",
+        tk.Label(center, text="🐟 泥鳅管理员",
                  font=("Microsoft YaHei UI", 18, "bold"),
                  bg=C["card"], fg=C["accent"]).pack(pady=(0, 5))
 
@@ -252,7 +256,7 @@ class AdminTool(tk.Tk):
         header = tk.Frame(self, bg=C["bg2"], padx=15, pady=8)
         header.pack(fill="x")
 
-        tk.Label(header, text="🐶 土狗管理员",
+        tk.Label(header, text="🐟 泥鳅管理员",
                  font=("Microsoft YaHei UI", 14, "bold"),
                  bg=C["bg2"], fg=C["accent"]).pack(side="left")
 

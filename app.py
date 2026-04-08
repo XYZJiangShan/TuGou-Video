@@ -1,5 +1,5 @@
 """
-🐶 土狗视频下载器 - 视频下载 & 去重处理工具
+🐟 泥鳅视频工具箱 - 视频下载 & 去重处理工具
 GUI界面 - 基于 tkinter
 
 功能:
@@ -28,7 +28,7 @@ from core.deduplicator import (
 
 
 class VideoToolkitApp:
-    """土狗视频下载器主界面"""
+    """泥鳅视频工具箱主界面"""
 
     # ---- 主题配色 ----
     COLORS = {
@@ -46,7 +46,7 @@ class VideoToolkitApp:
 
     def __init__(self, root):
         self.root = root
-        self.root.title("🐶 土狗视频下载器 V1.0 - 下载 & 去重")
+        self.root.title("🐟 泥鳅视频工具箱 V1.0 - 下载 & 去重")
         self.root.geometry("2100x1425")
         self.root.minsize(1650, 1125)
         self.root.configure(bg=self.COLORS["bg_dark"])
@@ -128,7 +128,7 @@ class VideoToolkitApp:
 
         title_label = tk.Label(
             header,
-            text="🐶 土狗视频下载器",
+            text="🐟 泥鳅视频工具箱",
             font=("Microsoft YaHei UI", 13, "bold"),
             fg=self.COLORS["accent"],
             bg=self.COLORS["bg_dark"],
@@ -217,6 +217,11 @@ class VideoToolkitApp:
             wrap="word",
         )
         self.url_entry.pack(fill="x")
+
+        # 监听粘贴事件：自动清空旧内容，只保留新粘贴的链接
+        self.url_entry.bind("<<Paste>>", self._on_url_paste)
+        # 记录上次已下载的URL，防止重复
+        self._last_downloaded_url = None
 
         # 保存目录
         dir_frame = tk.Frame(tab, bg=self.COLORS["bg_card"], padx=20, pady=20)
@@ -685,6 +690,33 @@ class VideoToolkitApp:
 
     # ==================== 事件处理 ====================
 
+    def _on_url_paste(self, event=None):
+        """粘贴时自动清空旧内容，只保留新粘贴的链接"""
+        try:
+            clipboard = self.root.clipboard_get()
+            if not clipboard or not clipboard.strip():
+                return
+
+            # 检查剪贴板里有没有URL
+            import re
+            urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', clipboard)
+            if urls:
+                # 有链接 → 清空输入框，填入新链接
+                self.url_entry.delete("1.0", "end")
+                self.url_entry.insert("1.0", clipboard.strip())
+                return "break"  # 阻止默认粘贴行为（避免重复插入）
+        except tk.TclError:
+            pass  # 剪贴板为空或不可访问
+        return None
+
+    def _extract_latest_url(self, text):
+        """从文本中提取最新的（最后一个）有效链接"""
+        import re
+        urls = re.findall(r'https?://[^\s<>"{}|\\^`\[\]]+', text)
+        if urls:
+            return urls[-1]  # 取最后一个（最新粘贴的）
+        return text.strip()
+
     def _browse_download_dir(self):
         path = filedialog.askdirectory(title="选择下载保存目录")
         if path:
@@ -779,10 +811,21 @@ class VideoToolkitApp:
 
     def _start_download(self):
         """开始下载"""
-        url = self.url_entry.get("1.0", "end").strip()
-        if not url:
+        raw_text = self.url_entry.get("1.0", "end").strip()
+        if not raw_text:
             messagebox.showwarning("提示", "请输入视频链接！")
             return
+
+        # 提取最新的有效链接
+        url = self._extract_latest_url(raw_text)
+        if not url:
+            messagebox.showwarning("提示", "未识别到有效链接，请检查输入！")
+            return
+
+        # 检查是否跟上次一样
+        if url == self._last_downloaded_url:
+            if not messagebox.askyesno("提示", "该链接已下载过，确认再次下载？"):
+                return
 
         save_dir = self.download_dir_var.get()
         self.download_btn.configure(state="disabled", text="⏳ 下载中...")
@@ -800,6 +843,12 @@ class VideoToolkitApp:
                 self._log(self.dl_log, f"[开始] 正在下载: {url[:80]}...")
                 path = downloader.download(url, callback=callback)
                 self._log(self.dl_log, f"[完成] ✅ 保存至: {path}")
+
+                # 记录已下载URL
+                self._last_downloaded_url = url
+
+                # 下载成功后清空输入框，方便粘贴下一个
+                self.root.after(0, lambda: self.url_entry.delete("1.0", "end"))
 
                 self.root.after(0, lambda: self.dl_status_label.configure(
                     text=f"✅ 下载完成! {path}", fg=self.COLORS["success"]

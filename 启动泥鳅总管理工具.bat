@@ -1,8 +1,8 @@
 @echo off
 chcp 65001 >nul
-title 土狗管理员
+title 泥鳅总管理工具
 echo ===================================
-echo   土狗管理员
+echo   🐟 泥鳅总管理工具
 echo ===================================
 echo.
 
@@ -23,8 +23,8 @@ if %ERRORLEVEL% EQU 0 (
     )
 )
 
-echo 启动土狗管理员...
-%PYTHON_CMD% "%~dp0admin_tool.py"
+echo 启动总管理工具...
+%PYTHON_CMD% "%~dp0super_admin_tool.py"
 if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [错误] 启动失败，错误码: %ERRORLEVEL%

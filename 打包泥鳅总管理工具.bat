@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title 打包土狗总管理工具 EXE
+title 打包泥鳅总管理工具 EXE
 
 echo ====================================
-echo   打包土狗总管理工具 EXE
+echo   打包泥鳅总管理工具 EXE
 echo ====================================
 echo.
 
@@ -39,7 +39,7 @@ echo 开始打包...
 echo.
 
 %PYTHON% -m PyInstaller ^
-    --name "土狗总管理工具" ^
+    --name "泥鳅总管理工具" ^
     --onedir ^
     --windowed ^
     --icon "assets\icon.ico" ^
@@ -53,7 +53,7 @@ echo.
 if %errorlevel% equ 0 (
     echo ====================================
     echo   [OK] 打包完成！
-    echo   输出: dist\土狗总管理工具\
+    echo   输出: dist\泥鳅总管理工具\
     echo ====================================
 ) else (
     echo [错误] 打包失败

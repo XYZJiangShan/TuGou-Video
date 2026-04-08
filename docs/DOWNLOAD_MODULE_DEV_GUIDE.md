@@ -1,4 +1,4 @@
-# 🐶 土狗视频下载器 — 下载模块开发文档
+# 🐟 泥鳅视频工具箱 — 下载模块开发文档
 
 > **面向对象**：其他 AI Agent / 开发者
 > **最后更新**：2026-04-04
@@ -357,7 +357,7 @@ print(f"Description: {desc}")
 
 | 文件 | 用途 | 状态 |
 |------|------|------|
-| `_compare_videos.py` | 夜猫 vs 土狗 帧级对比 | 分析用，硬编码路径 |
+| `_compare_videos.py` | 夜猫 vs 泥鳅 帧级对比 | 分析用，硬编码路径 |
 | `_compare_yemao_vs_tugou.py` | 详细帧类型+亮度分析 | 分析用 |
 | `_deep_compare.py` | VFR vs CFR 深度帧分析 | 分析用 |
 | `_yemao_vfr.py` | 夜猫VFR帧特征分析 | 分析用 |

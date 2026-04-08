@@ -1,4 +1,4 @@
-# 🐶 土狗视频优化工具 V1.0
+# 🐟 泥鳅视频工具箱 V1.0
 
 一站式视频下载 & 去重处理工具，专注抖音/快手/小红书/B站平台。
 
@@ -43,13 +43,13 @@
 
 ### 方法1：双击启动
 ```
-双击 start.bat
+双击 启动泥鳅工具箱.bat
 ```
 
 ### 方法2：命令行
 ```bash
 # 安装依赖
-install.bat
+安装依赖.bat
 # 或手动：pip install -r requirements.txt
 
 # 启动
@@ -58,22 +58,28 @@ python app.py
 
 ### 方法3：打包 EXE
 ```
-双击 build.bat
+双击 打包泥鳅工具箱.bat
 ```
 
 ## BAT 脚本说明
 
 | 文件 | 功能 |
 |------|------|
-| `start.bat` | 一键启动（自动查找Python、检查依赖、启动GUI） |
-| `install.bat` | 安装/更新 Python 依赖 |
-| `build.bat` | PyInstaller 打包成 EXE |
+| `启动泥鳅工具箱.bat` | 一键启动（自动查找Python、检查依赖、启动GUI） |
+| `启动泥鳅管理员.bat` | 启动管理员工具 |
+| `启动泥鳅总管理工具.bat` | 启动总管理工具 |
+| `打包泥鳅工具箱.bat` | 打包工具箱 EXE |
+| `打包泥鳅管理员.bat` | 打包管理员 EXE |
+| `打包泥鳅总管理工具.bat` | 打包总管理工具 EXE |
+| `安装依赖.bat` | 安装/更新 Python 依赖 |
 
 ## 项目结构
 
 ```
 video-toolkit/
 ├── app.py                 # GUI主程序
+├── admin_tool.py          # 管理员工具
+├── super_admin_tool.py    # 总管理工具
 ├── core/
 │   ├── __init__.py
 │   ├── downloader.py      # 视频下载模块
@@ -85,9 +91,9 @@ video-toolkit/
 ├── docs/                  # 开发文档
 ├── downloads/             # 下载目录（运行时生成）
 ├── output/                # 去重输出目录（运行时生成）
-├── start.bat              # 一键启动
-├── install.bat            # 安装依赖
-├── build.bat              # 打包EXE
+├── 启动泥鳅工具箱.bat     # 一键启动
+├── 安装依赖.bat           # 安装依赖
+├── 打包泥鳅工具箱.bat     # 打包EXE
 ├── requirements.txt       # Python依赖
 └── README.md
 ```

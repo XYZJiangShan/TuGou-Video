@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-土狗管理员总管理工具
+泥鳅总管理工具
 超级管理员使用，功能：
   - 管理子管理员（创建/编辑权限/启禁/删除）
   - 查看所有用户 + 直接充值/封禁
@@ -144,13 +144,17 @@ class SuperAdminAPI:
 class SuperAdminTool(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("🐶 土狗管理员总管理工具")
+        self.title("🐟 泥鳅总管理工具")
         self.geometry("1350x750")
         self.minsize(1150, 650)
         self.configure(bg=C["bg"])
-        # 去掉默认图标
-        self._blank_icon = tk.PhotoImage(width=1, height=1)
-        self.iconphoto(True, self._blank_icon)
+        # 设置泥鳅图标
+        try:
+            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico")
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception:
+            pass
 
         self.api = None
         self._admins_data = []
@@ -176,7 +180,7 @@ class SuperAdminTool(tk.Tk):
         conn_bar = tk.Frame(self, bg=C["bg2"], padx=15, pady=10)
         conn_bar.pack(fill="x")
 
-        tk.Label(conn_bar, text="🐶 土狗管理员总管理工具",
+        tk.Label(conn_bar, text="🐟 泥鳅总管理工具",
                  font=("Microsoft YaHei UI", 14, "bold"),
                  bg=C["bg2"], fg=C["accent"]).pack(side="left")
 

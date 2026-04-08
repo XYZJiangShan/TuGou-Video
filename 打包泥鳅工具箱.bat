@@ -1,9 +1,9 @@
 @echo off
 chcp 65001 >nul
-title 打包土狗工具箱 EXE
+title 打包泥鳅工具箱 EXE
 
 echo ====================================
-echo   打包土狗工具箱 EXE
+echo   打包泥鳅工具箱 EXE
 echo ====================================
 echo.
 
@@ -39,7 +39,7 @@ echo 开始打包...
 echo.
 
 %PYTHON% -m PyInstaller ^
-    --name "土狗视频优化工具" ^
+    --name "泥鳅视频工具箱" ^
     --onedir ^
     --windowed ^
     --icon "assets\icon.ico" ^
@@ -68,7 +68,7 @@ echo ====================================
 echo.
 
 REM --- 自动复制 ffmpeg/ffprobe ---
-set DIST_DIR=dist\土狗视频优化工具
+set DIST_DIR=dist\泥鳅视频工具箱
 if exist "%~dp0ffmpeg.exe" (
     echo 复制 ffmpeg.exe ...
     copy /Y "%~dp0ffmpeg.exe" "%DIST_DIR%\" >nul
