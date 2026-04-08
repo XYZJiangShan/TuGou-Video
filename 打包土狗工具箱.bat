@@ -56,17 +56,34 @@ echo.
     app.py
 
 echo.
-if %errorlevel% equ 0 (
-    echo ====================================
-    echo   [OK] 打包完成！
-    echo   输出: dist\土狗视频优化工具\
-    echo ====================================
-    echo.
-    echo [提示] 运行前需要把 ffmpeg.exe 和 ffprobe.exe
-    echo        复制到 dist\土狗视频优化工具\ 目录下
-) else (
+if %errorlevel% neq 0 (
     echo [错误] 打包失败
+    pause
+    exit /b 1
 )
 
+echo ====================================
+echo   [OK] 打包完成！
+echo ====================================
+echo.
+
+REM --- 自动复制 ffmpeg/ffprobe ---
+set DIST_DIR=dist\土狗视频优化工具
+if exist "%~dp0ffmpeg.exe" (
+    echo 复制 ffmpeg.exe ...
+    copy /Y "%~dp0ffmpeg.exe" "%DIST_DIR%\" >nul
+) else (
+    echo [警告] 未找到 ffmpeg.exe，请手动复制到 %DIST_DIR%\
+)
+
+if exist "%~dp0ffprobe.exe" (
+    echo 复制 ffprobe.exe ...
+    copy /Y "%~dp0ffprobe.exe" "%DIST_DIR%\" >nul
+) else (
+    echo [警告] 未找到 ffprobe.exe，请手动复制到 %DIST_DIR%\
+)
+
+echo.
+echo 输出目录: %DIST_DIR%
 echo.
 pause
