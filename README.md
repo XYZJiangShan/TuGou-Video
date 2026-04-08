@@ -1,6 +1,6 @@
-# 🐶 土狗视频下载器 V1.0
+# 🐶 土狗视频优化工具 V1.0
 
-一站式视频下载 & 去重处理工具。
+一站式视频下载 & 去重处理工具，专注抖音/快手/小红书/B站平台。
 
 ## 功能
 
@@ -26,56 +26,70 @@
 | 元数据层 | MD5修改 | 重编码+随机元数据 |
 | 元数据层 | 关键帧随机化 | 随机关键帧间隔 |
 
-### ⚡ 5种预设模式
-1. **轻度去重** - 微调色彩+裁剪，画质损失最小
-2. **中度去重** - 全面调整，推荐日常使用
-3. **深度去重** - 大幅调整+音频变调
-4. **镜像翻转模式** - 镜像+色彩微调
-5. **极限去重** - 所有手段全开
+### ⚡ 平台预设模式
+- **抖音** - 帧替换v4 + 多维微调 + 上采样
+- **快手** - 色彩偏移/VFR插帧/混淆帧替换（3种模式可选）
+- **小红书** - 色相偏移 + 强锐化
+- **B站** - 帧替换v4 + 不二压参数
+- **通用** - 轻度/中度/深度/镜像/极限等11种模式
 
 ## 环境要求
 
 - Python 3.10+
-- FFmpeg（视频处理核心）
-- 依赖库：requests, opencv-python, numpy, Pillow
+- FFmpeg 7.x（放在项目根目录）
+- GPU: NVIDIA（可选，h264_nvenc 加速）
 
 ## 快速开始
 
 ### 方法1：双击启动
 ```
-双击 启动土狗下载器.bat
+双击 start.bat
 ```
 
 ### 方法2：命令行
 ```bash
-pip install -r requirements.txt
+# 安装依赖
+install.bat
+# 或手动：pip install -r requirements.txt
+
+# 启动
 python app.py
 ```
 
-### 方法3：仅下载（命令行）
-```bash
-python -m core.downloader
+### 方法3：打包 EXE
+```
+双击 build.bat
 ```
 
-### 方法4：仅去重（命令行）
-```bash
-python -m core.deduplicator
-```
+## BAT 脚本说明
+
+| 文件 | 功能 |
+|------|------|
+| `start.bat` | 一键启动（自动查找Python、检查依赖、启动GUI） |
+| `install.bat` | 安装/更新 Python 依赖 |
+| `build.bat` | PyInstaller 打包成 EXE |
 
 ## 项目结构
 
 ```
 video-toolkit/
-├── app.py                 # GUI主程序（土狗视频下载器）
+├── app.py                 # GUI主程序
 ├── core/
 │   ├── __init__.py
 │   ├── downloader.py      # 视频下载模块
-│   └── deduplicator.py    # 视频去重引擎
-├── downloads/             # 下载目录
-├── output/                # 去重输出目录
+│   └── deduplicator.py    # 视频去重引擎（146KB，含所有平台策略）
+├── assets/
+│   ├── icon.ico           # 应用图标
+│   ├── icon.png           # 应用图标（PNG）
+│   └── yemao_confuse_frame.png  # 混淆帧样本
+├── docs/                  # 开发文档
+├── downloads/             # 下载目录（运行时生成）
+├── output/                # 去重输出目录（运行时生成）
+├── start.bat              # 一键启动
+├── install.bat            # 安装依赖
+├── build.bat              # 打包EXE
 ├── requirements.txt       # Python依赖
-├── 启动土狗下载器.bat      # Windows启动脚本
-└── README.md              # 本文件
+└── README.md
 ```
 
 ## 免责声明
